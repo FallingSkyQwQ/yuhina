@@ -267,6 +267,23 @@ impl Yuhina {
             Ok("add-server") => Some(Dialog::AddServer),
             _ => None,
         };
+        let selected_instance = std::env::var("YUHINA_INSTANCE").ok();
+        let instance_tab = match std::env::var("YUHINA_TAB").as_deref() {
+            Ok("logs") => InstanceTab::Logs,
+            Ok("content") => InstanceTab::Content,
+            Ok("settings") => InstanceTab::Settings,
+            Ok("backups") => InstanceTab::Backups,
+            Ok("files") => InstanceTab::Files,
+            _ => InstanceTab::Overview,
+        };
+        let create_loader = match std::env::var("YUHINA_LOADER").as_deref() {
+            Ok("fabric") => LoaderType::Fabric,
+            Ok("quilt") => LoaderType::Quilt,
+            Ok("forge") => LoaderType::Forge,
+            Ok("neoforge") => LoaderType::Neoforge,
+            _ => LoaderType::Vanilla,
+        };
+        let create_version = std::env::var("YUHINA_MC").unwrap_or_default();
         let create_name = cx.new(|cx| InputState::new(window, cx));
         let account_name = cx.new(|cx| InputState::new(window, cx));
         let server_name = cx.new(|cx| InputState::new(window, cx));
@@ -296,8 +313,8 @@ impl Yuhina {
             versions: None,
             running: HashMap::new(),
             installs: HashMap::new(),
-            selected_instance: None,
-            instance_tab: InstanceTab::Overview,
+            selected_instance,
+            instance_tab,
             search_query: String::new(),
             search_results: None,
             library_type: "mod".to_string(),
@@ -309,8 +326,8 @@ impl Yuhina {
             dialog,
             loading: Loading::default(),
             create_name,
-            create_version: String::new(),
-            create_loader: LoaderType::Vanilla,
+            create_version,
+            create_loader,
             create_loader_version: None,
             loader_versions: Vec::new(),
             loader_versions_loading: false,
