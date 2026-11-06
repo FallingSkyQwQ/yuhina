@@ -197,7 +197,7 @@ fn home(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> Any
             let open_id = id.clone();
             let play_id = id.clone();
             let installed = summary.installed;
-            let running = app.running.contains_key(&id);
+            let running = app.is_game_running(&id);
             card_shell()
                 .child(
                     div()
@@ -498,7 +498,7 @@ fn instances_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina
             let id = summary.record.id.clone();
             let open_id = id.clone();
             let play_id = id.clone();
-            let running = app.running.contains_key(&id);
+            let running = app.is_game_running(&id);
             let status = if running {
                 chip(
                     app.t("instances.running"),
@@ -636,7 +636,7 @@ fn instance_detail(
         .cloned()
         .expect("the instance exists");
     let record = summary.record.clone();
-    let running = app.running.contains_key(&id);
+    let running = app.is_game_running(&id);
     let install = app.installs.get(&id).cloned();
 
     let header = div()
@@ -1758,6 +1758,7 @@ fn activity(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) ->
     let running: Vec<AnyElement> = app
         .running
         .iter()
+        .filter(|(_, game)| matches!(game.status, GameStatus::Starting | GameStatus::Running))
         .map(|(id, game)| {
             let stop_id = id.clone();
             let name = app

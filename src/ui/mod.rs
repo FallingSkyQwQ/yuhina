@@ -538,6 +538,13 @@ impl Yuhina {
         cx.notify();
     }
 
+    pub fn is_game_running(&self, id: &str) -> bool {
+        self.running
+            .get(id)
+            .map(|game| matches!(game.status, GameStatus::Starting | GameStatus::Running))
+            .unwrap_or(false)
+    }
+
     pub fn open_instance(&mut self, id: String, cx: &mut Context<Self>) {
         self.selected_instance = Some(id);
         self.instance_tab = InstanceTab::Overview;
@@ -689,8 +696,11 @@ impl Yuhina {
     }
 
     pub fn start_install(&mut self, id: String, cx: &mut Context<Self>) {
-        if self.installs.contains_key(&id) {
-            return;
+        if let Some(task) = self.installs.get(&id) {
+            if !task.finished {
+                return;
+            }
+            self.installs.remove(&id);
         }
         let paths = self.paths.clone();
         let record = match instances::load(&paths, &id) {
@@ -777,7 +787,7 @@ impl Yuhina {
         server: Option<ServerTarget>,
         cx: &mut Context<Self>,
     ) {
-        if self.running.contains_key(&id) {
+        if self.is_game_running(&id) {
             return;
         }
         let paths = self.paths.clone();
