@@ -478,14 +478,29 @@ fn instances_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina
     }
 
     let actions = Some(
-        MaterialButton::new("instances-new")
-            .variant(ButtonVariant::Filled)
-            .icon(material_icon("add", 20.0))
-            .child(app.t("instances.new"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.dialog = Some(Dialog::CreateInstance);
-                cx.notify();
-            }))
+        div()
+            .flex()
+            .gap(px(8.))
+            .child(
+                MaterialButton::new("instances-import")
+                    .variant(ButtonVariant::Tonal)
+                    .icon(material_icon("download", 20.0))
+                    .child(app.t("backups.import"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.dialog = Some(Dialog::ImportInstance);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                MaterialButton::new("instances-new")
+                    .variant(ButtonVariant::Filled)
+                    .icon(material_icon("add", 20.0))
+                    .child(app.t("instances.new"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.dialog = Some(Dialog::CreateInstance);
+                        cx.notify();
+                    })),
+            )
             .into_any_element(),
     );
     let header = page_header(app, "instances.title", "instances.subtitle", actions);
@@ -765,6 +780,17 @@ fn instance_detail(
                         )
                         .child(
                             IconButton::new(
+                                "detail-export",
+                                material_icon("upload", 22.0),
+                                app.t("backups.export"),
+                            )
+                            .on_click(cx.listener({
+                                let id = id.clone();
+                                move |this, _, _, cx| this.export_instance(id.clone(), cx)
+                            })),
+                        )
+                        .child(
+                            IconButton::new(
                                 "detail-delete",
                                 material_icon("delete", 22.0),
                                 app.t("instances.delete"),
@@ -786,28 +812,36 @@ fn instance_detail(
             TabItem::new("overview", app.t("instances.tab.overview")),
             TabItem::new("logs", app.t("instances.tab.logs")),
             TabItem::new("content", app.t("instances.tab.content")),
+            TabItem::new("backups", app.t("instances.tab.backups")),
+            TabItem::new("files", app.t("instances.tab.files")),
             TabItem::new("settings", app.t("instances.tab.settings")),
         ])
         .selected(match app.instance_tab {
             InstanceTab::Overview => "overview",
             InstanceTab::Logs => "logs",
             InstanceTab::Content => "content",
+            InstanceTab::Backups => "backups",
+            InstanceTab::Files => "files",
             InstanceTab::Settings => "settings",
         })
         .on_change(cx.listener(|this, value: &SharedString, _, cx| {
-            this.instance_tab = match value.as_ref() {
+            let tab = match value.as_ref() {
                 "logs" => InstanceTab::Logs,
                 "content" => InstanceTab::Content,
+                "backups" => InstanceTab::Backups,
+                "files" => InstanceTab::Files,
                 "settings" => InstanceTab::Settings,
                 _ => InstanceTab::Overview,
             };
-            cx.notify();
+            this.set_instance_tab(tab, cx);
         }));
 
     let body: AnyElement = match app.instance_tab {
         InstanceTab::Overview => overview_tab(app, &record, &summary),
         InstanceTab::Logs => logs_tab(app, &id),
         InstanceTab::Content => content_tab(app, cx, &id),
+        InstanceTab::Backups => backups_tab(app, cx, &id),
+        InstanceTab::Files => files_tab(app, cx, &id),
         InstanceTab::Settings => settings_tab(app, cx, &record),
     };
 
@@ -1140,6 +1174,369 @@ fn content_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
         .gap(px(16.))
         .children(sections)
         .into_any_element()
+}
+
+fn backups_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
+    let running = app.is_game_running(id);
+    let busy = app.loading.backups;
+    let create_id = id.to_string();
+    let heading = div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.))
+        .flex_wrap()
+        .child(section_label(app, "instances.tab.backups"))
+        .child(
+            MaterialButton::new("backup-create")
+                .variant(ButtonVariant::Filled)
+                .button_size(ButtonSize::Small)
+                .icon(material_icon("archive", 18.0))
+                .child(app.t("backups.create"))
+                .disabled(busy || running)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.create_backup(window, create_id.clone(), cx)
+                })),
+        );
+
+    let label_field = div().flex().flex_col().gap(px(6.)).w_full().child(
+        TextField::new("backup-label", &app.backup_label)
+            .w_full()
+            .label(app.t("backups.label"))
+            .placeholder(app.t("backups.label_placeholder")),
+    );
+
+    let rows: Vec<AnyElement> = app
+        .backups
+        .iter()
+        .map(|backup| {
+            let label = backup
+                .label
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| app.t("backups.untitled").to_string());
+            let restore_instance = id.to_string();
+            let restore_backup_id = backup.id.clone();
+            let delete_instance = id.to_string();
+            let delete_backup_id = backup.id.clone();
+            let restore_label = label.clone();
+            let delete_label = label.clone();
+            div()
+                .w_full()
+                .rounded(px(18.))
+                .bg(color(ColorRole::SURFACE_CONTAINER))
+                .p(px(14.))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .size(px(40.))
+                        .rounded(px(14.))
+                        .bg(color(ColorRole::TERTIARY_CONTAINER))
+                        .text_color(color(ColorRole::ON_TERTIARY_CONTAINER))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(material_icon("archive", 22.0)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w(px(180.))
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(label),
+                        )
+                        .child(muted(format!(
+                            "{} · {} · {} {}",
+                            backup_time(&backup.created_at),
+                            format_bytes(backup.bytes),
+                            backup.entries,
+                            app.t("backups.files")
+                        ))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(
+                            MaterialButton::new(format!("backup-restore-{}", backup.id))
+                                .variant(ButtonVariant::Text)
+                                .button_size(ButtonSize::Small)
+                                .icon(material_icon("settings_backup_restore", 18.0))
+                                .child(app.t("backups.restore"))
+                                .disabled(running)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.dialog = Some(Dialog::RestoreBackup {
+                                        instance_id: restore_instance.clone(),
+                                        backup_id: restore_backup_id.clone(),
+                                        label: restore_label.clone(),
+                                    });
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            IconButton::new(
+                                format!("backup-delete-{}", backup.id),
+                                material_icon("delete", 18.0),
+                                app.t("backups.delete"),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.dialog = Some(Dialog::DeleteBackup {
+                                        instance_id: delete_instance.clone(),
+                                        backup_id: delete_backup_id.clone(),
+                                        label: delete_label.clone(),
+                                    });
+                                    cx.notify();
+                                },
+                            )),
+                        ),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    let list: AnyElement = if busy && app.backups.is_empty() {
+        panel()
+            .child(muted(app.t("common.loading")))
+            .into_any_element()
+    } else if rows.is_empty() {
+        panel()
+            .child(empty_state(
+                app,
+                "archive",
+                "backups.empty",
+                "backups.empty_body",
+                None,
+            ))
+            .into_any_element()
+    } else {
+        panel()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .children(rows)
+            .into_any_element()
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(16.))
+        .child(
+            panel()
+                .flex()
+                .flex_col()
+                .gap(px(14.))
+                .child(heading)
+                .child(label_field)
+                .children((running).then(|| muted(app.t("backups.game_running")))),
+        )
+        .child(list)
+        .into_any_element()
+}
+
+fn files_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
+    let root_id = id.to_string();
+    let mut crumbs: Vec<AnyElement> = vec![
+        MaterialButton::new("files-root")
+            .variant(ButtonVariant::Text)
+            .button_size(ButtonSize::ExtraSmall)
+            .icon(material_icon("folder_open", 16.0))
+            .child(app.t("files.root"))
+            .on_click(
+                cx.listener(move |this, _, _, cx| this.open_files_dir(&root_id, String::new(), cx)),
+            )
+            .into_any_element(),
+    ];
+    let mut path = String::new();
+    for segment in app
+        .files_relative
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+    {
+        path = if path.is_empty() {
+            segment.to_string()
+        } else {
+            format!("{path}/{segment}")
+        };
+        let target = path.clone();
+        let target_id = id.to_string();
+        crumbs.push(
+            div()
+                .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                .child(material_icon("chevron_right", 16.0))
+                .into_any_element(),
+        );
+        crumbs.push(
+            MaterialButton::new(format!("files-crumb-{target}"))
+                .variant(ButtonVariant::Text)
+                .button_size(ButtonSize::ExtraSmall)
+                .child(segment.to_string())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_files_dir(&target_id, target.clone(), cx)
+                }))
+                .into_any_element(),
+        );
+    }
+
+    let rows: Vec<AnyElement> = app
+        .files_entries
+        .iter()
+        .map(|entry| {
+            let is_dir = entry.is_dir;
+            let relative = entry.relative.clone();
+            let target_id = id.to_string();
+            let trailing = if is_dir {
+                app.t("files.folder").to_string()
+            } else {
+                format_bytes(entry.bytes)
+            };
+            let icon = if is_dir { "folder" } else { "description" };
+            ListItem::new(format!("file-{}", entry.relative), entry.name.clone())
+                .leading(ListLeading::Icon(material_icon(icon, 20.0)))
+                .trailing_text(trailing)
+                .trailing(if is_dir {
+                    ListTrailing::Icon(material_icon("chevron_right", 18.0))
+                } else {
+                    ListTrailing::None
+                })
+                .container(ColorRole::SURFACE_CONTAINER)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if is_dir {
+                        this.open_files_dir(&target_id, relative.clone(), cx);
+                    } else {
+                        this.preview_file(&target_id, relative.clone(), cx);
+                    }
+                }))
+                .into_any_element()
+        })
+        .collect();
+
+    let list: AnyElement = if app.loading.files && app.files_entries.is_empty() {
+        panel()
+            .child(muted(app.t("files.loading")))
+            .into_any_element()
+    } else if rows.is_empty() {
+        panel()
+            .child(empty_state(
+                app,
+                "folder",
+                "files.empty",
+                "files.empty_body",
+                None,
+            ))
+            .into_any_element()
+    } else {
+        panel()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .children(rows)
+            .into_any_element()
+    };
+
+    let preview: AnyElement = match &app.file_preview {
+        Some(preview) => {
+            let lines: Vec<AnyElement> = preview
+                .content
+                .lines()
+                .map(|line| {
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(18.))
+                        .font_family("monospace")
+                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                        .child(line.to_string())
+                        .into_any_element()
+                })
+                .collect();
+            panel()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.))
+                        .flex_wrap()
+                        .child(section_label(app, "files.preview"))
+                        .child(muted(preview.relative.clone())),
+                )
+                .children(preview.truncated.then(|| {
+                    chip(
+                        app.t("files.truncated"),
+                        ColorRole::SECONDARY_CONTAINER,
+                        ColorRole::ON_SECONDARY_CONTAINER,
+                    )
+                }))
+                .child(
+                    div()
+                        .id("file-preview")
+                        .w_full()
+                        .max_h(px(420.))
+                        .overflow_y_scroll()
+                        .rounded(px(16.))
+                        .bg(color(ColorRole::SURFACE_CONTAINER_LOWEST))
+                        .p(px(16.))
+                        .children(lines),
+                )
+                .into_any_element()
+        }
+        None => panel()
+            .child(muted(app.t("files.preview_hint")))
+            .into_any_element(),
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(16.))
+        .child(
+            panel()
+                .flex()
+                .flex_row()
+                .items_center()
+                .flex_wrap()
+                .gap(px(4.))
+                .children(crumbs),
+        )
+        .child(list)
+        .child(preview)
+        .into_any_element()
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let value = bytes as f64;
+    if value >= MB {
+        format!("{:.1} MB", value / MB)
+    } else if value >= KB {
+        format!("{:.1} KB", value / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn backup_time(created_at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(created_at)
+        .map(|value| {
+            value
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| created_at.to_string())
 }
 
 fn settings_tab(app: &Yuhina, cx: &mut Context<Yuhina>, record: &InstanceRecord) -> AnyElement {

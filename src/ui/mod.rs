@@ -16,6 +16,9 @@ use gpui_kit_material::prelude::*;
 use gpui_kit_material::theme;
 
 use crate::core::accounts::{self, AccountSummary};
+use crate::core::backup::{self, BackupManifest};
+use crate::core::export;
+use crate::core::files::{self, FileEntry, TextPreview};
 use crate::core::install::{self, InstallPhase, InstallProgress};
 use crate::core::instances::{self, InstanceRecord, InstanceSummary, LoaderType, MemoryMode};
 use crate::core::java::{self, JavaRuntime};
@@ -89,6 +92,8 @@ pub enum InstanceTab {
     Overview,
     Logs,
     Content,
+    Backups,
+    Files,
     Settings,
 }
 
@@ -110,6 +115,8 @@ pub struct Loading {
     pub java: bool,
     pub update: bool,
     pub library: bool,
+    pub backups: bool,
+    pub files: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +147,17 @@ pub enum Dialog {
         instance_id: String,
         project_type: String,
         filename: String,
+    },
+    ImportInstance,
+    RestoreBackup {
+        instance_id: String,
+        backup_id: String,
+        label: String,
+    },
+    DeleteBackup {
+        instance_id: String,
+        backup_id: String,
+        label: String,
     },
 }
 
@@ -216,6 +234,12 @@ pub struct Yuhina {
     pub authlib_user: Entity<InputState>,
     pub authlib_password: Entity<InputState>,
     pub search_input: Entity<InputState>,
+    pub import_path: Entity<InputState>,
+    pub backup_label: Entity<InputState>,
+    pub backups: Vec<BackupManifest>,
+    pub files_entries: Vec<FileEntry>,
+    pub files_relative: String,
+    pub file_preview: Option<TextPreview>,
     theme_pending: bool,
 }
 
@@ -251,6 +275,8 @@ impl Yuhina {
         let authlib_user = cx.new(|cx| InputState::new(window, cx));
         let authlib_password = cx.new(|cx| InputState::new(window, cx));
         let search_input = cx.new(|cx| InputState::new(window, cx));
+        let import_path = cx.new(|cx| InputState::new(window, cx));
+        let backup_label = cx.new(|cx| InputState::new(window, cx));
 
         let mut this = Self {
             paths,
@@ -299,6 +325,12 @@ impl Yuhina {
             authlib_user,
             authlib_password,
             search_input,
+            import_path,
+            backup_label,
+            backups: Vec::new(),
+            files_entries: Vec::new(),
+            files_relative: String::new(),
+            file_preview: None,
             theme_pending: false,
         };
         this.refresh_all(cx);
@@ -565,6 +597,10 @@ impl Yuhina {
     pub fn open_instance(&mut self, id: String, cx: &mut Context<Self>) {
         self.selected_instance = Some(id);
         self.instance_tab = InstanceTab::Overview;
+        self.backups.clear();
+        self.files_entries.clear();
+        self.files_relative.clear();
+        self.file_preview = None;
         self.page = Page::Instances;
         cx.notify();
     }
@@ -1245,6 +1281,246 @@ impl Yuhina {
                     cx,
                 ),
                 Err(error) => this.show_error(error, cx),
+            },
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Backups, export/import and the file browser
+    // -----------------------------------------------------------------
+
+    pub fn set_instance_tab(&mut self, tab: InstanceTab, cx: &mut Context<Self>) {
+        self.instance_tab = tab;
+        let Some(id) = self.selected_instance.clone() else {
+            cx.notify();
+            return;
+        };
+        match tab {
+            InstanceTab::Backups => self.refresh_backups(&id, cx),
+            InstanceTab::Files => {
+                let relative = self.files_relative.clone();
+                self.refresh_files(&id, relative, cx);
+            }
+            _ => cx.notify(),
+        }
+    }
+
+    pub fn refresh_backups(&mut self, instance_id: &str, cx: &mut Context<Self>) {
+        if self.loading.backups {
+            return;
+        }
+        self.loading.backups = true;
+        cx.notify();
+        let paths = self.paths.clone();
+        let task_id = instance_id.to_string();
+        let target = instance_id.to_string();
+        spawn_task(
+            cx,
+            move || backup::list(&paths, &task_id),
+            move |this, result, cx| {
+                this.loading.backups = false;
+                match result {
+                    Ok(items) => {
+                        if this.selected_instance.as_deref() == Some(target.as_str()) {
+                            this.backups = items;
+                        }
+                    }
+                    Err(error) => this.show_error(error, cx),
+                }
+            },
+        );
+    }
+
+    pub fn create_backup(
+        &mut self,
+        window: &mut Window,
+        instance_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.loading.backups {
+            return;
+        }
+        if self.is_game_running(&instance_id) {
+            self.show_toast(self.t("backups.game_running"), true, cx);
+            return;
+        }
+        let label = self.backup_label.read(cx).value().trim().to_string();
+        self.backup_label
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        let paths = self.paths.clone();
+        let target = instance_id.clone();
+        self.loading.backups = true;
+        cx.notify();
+        spawn_task(
+            cx,
+            move || {
+                let label = (!label.is_empty()).then_some(label.as_str());
+                backup::create(&paths, &instance_id, label, |_| {})
+            },
+            move |this, result, cx| {
+                this.loading.backups = false;
+                match result {
+                    Ok(_) => {
+                        this.refresh_backups(&target, cx);
+                        this.show_toast(this.t("backups.created_toast"), false, cx);
+                    }
+                    Err(error) => this.show_error(error, cx),
+                }
+            },
+        );
+    }
+
+    pub fn restore_backup(
+        &mut self,
+        instance_id: String,
+        backup_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.dialog = None;
+        cx.notify();
+        if self.is_game_running(&instance_id) {
+            self.show_toast(self.t("backups.game_running"), true, cx);
+            return;
+        }
+        let paths = self.paths.clone();
+        let target = instance_id.clone();
+        spawn_task(
+            cx,
+            move || backup::restore(&paths, &instance_id, &backup_id, |_| {}),
+            move |this, result, cx| match result {
+                Ok(_) => {
+                    this.refresh_backups(&target, cx);
+                    this.show_toast(this.t("backups.restored"), false, cx);
+                }
+                Err(error) => this.show_error(error, cx),
+            },
+        );
+    }
+
+    pub fn delete_backup(
+        &mut self,
+        instance_id: String,
+        backup_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.dialog = None;
+        cx.notify();
+        let paths = self.paths.clone();
+        let target = instance_id.clone();
+        spawn_task(
+            cx,
+            move || backup::delete(&paths, &instance_id, &backup_id),
+            move |this, result, cx| match result {
+                Ok(()) => {
+                    this.refresh_backups(&target, cx);
+                    this.show_toast(this.t("backups.deleted_toast"), false, cx);
+                }
+                Err(error) => this.show_error(error, cx),
+            },
+        );
+    }
+
+    pub fn export_instance(&mut self, instance_id: String, cx: &mut Context<Self>) {
+        let paths = self.paths.clone();
+        spawn_task(
+            cx,
+            move || export::export_instance(&paths, &instance_id, |_| {}),
+            |this, result, cx| match result {
+                Ok(path) => {
+                    let filename = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    this.show_toast(
+                        format!("{} {}", this.t("backups.export_done"), filename),
+                        false,
+                        cx,
+                    );
+                }
+                Err(error) => this.show_error(error, cx),
+            },
+        );
+    }
+
+    pub fn import_instance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self
+            .import_path
+            .read(cx)
+            .value()
+            .trim()
+            .trim_matches('"')
+            .to_string();
+        if raw.is_empty() {
+            self.show_toast(self.t("backups.import_path_required"), true, cx);
+            return;
+        }
+        self.import_path
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        let paths = self.paths.clone();
+        let source = PathBuf::from(raw);
+        spawn_task(
+            cx,
+            move || export::import(&paths, &source, |_| {}),
+            |this, result, cx| match result {
+                Ok(record) => {
+                    this.dialog = None;
+                    this.refresh_instances(cx);
+                    this.open_instance(record.id, cx);
+                    this.show_toast(this.t("backups.imported_toast"), false, cx);
+                }
+                Err(error) => this.show_error(error, cx),
+            },
+        );
+    }
+
+    pub fn refresh_files(&mut self, instance_id: &str, relative: String, cx: &mut Context<Self>) {
+        let requested = relative;
+        self.files_relative = requested.clone();
+        self.file_preview = None;
+        self.loading.files = true;
+        cx.notify();
+        let paths = self.paths.clone();
+        let task_id = instance_id.to_string();
+        let task_relative = requested.clone();
+        let target = instance_id.to_string();
+        let guard = requested;
+        spawn_task(
+            cx,
+            move || files::list_dir(&paths, &task_id, &task_relative),
+            move |this, result, cx| {
+                if this.selected_instance.as_deref() == Some(target.as_str())
+                    && this.files_relative == guard
+                {
+                    this.loading.files = false;
+                    match result {
+                        Ok(items) => this.files_entries = items,
+                        Err(error) => this.show_error(error, cx),
+                    }
+                }
+            },
+        );
+    }
+
+    pub fn open_files_dir(&mut self, instance_id: &str, relative: String, cx: &mut Context<Self>) {
+        self.refresh_files(instance_id, relative, cx);
+    }
+
+    pub fn preview_file(&mut self, instance_id: &str, relative: String, cx: &mut Context<Self>) {
+        self.file_preview = None;
+        cx.notify();
+        let paths = self.paths.clone();
+        let task_id = instance_id.to_string();
+        let target = instance_id.to_string();
+        spawn_task(
+            cx,
+            move || files::read_text_preview(&paths, &task_id, &relative),
+            move |this, result, cx| {
+                if this.selected_instance.as_deref() == Some(target.as_str()) {
+                    match result {
+                        Ok(preview) => this.file_preview = Some(preview),
+                        Err(error) => this.show_error(error, cx),
+                    }
+                }
             },
         );
     }

@@ -103,7 +103,6 @@ extracted into the root version's `natives/` directory and added through
 
 - `.mrpack` modpack import
 - SRV lookup for server addresses
-- Per-instance file browser and backup/restore
 - Skin head rendering (accounts use monogram avatars)
 - In-app updater (the app links to the release page)
 - Native title bar theming is left to the platform
