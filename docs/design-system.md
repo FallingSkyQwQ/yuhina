@@ -30,15 +30,18 @@ Do not introduce a Minecraft-green accent. The scheme supplies the accent.
 ## Typography
 
 - Family: Roboto (system fallback), CJK through the platform fallback.
-- Page title: 32/40, medium
-- Section label: 13/18, medium, `ON_SURFACE_VARIANT`
-- Body: 14/20
-- Supporting: 13/18
-- Hero headline: 36/44, medium
-- Code and logs: 12/18 monospace
+- Page title: `TypeRole::HeadlineLarge.emphasized()` (32/40, medium)
+- Section label: `TypeRole::LabelLarge.emphasized()` (14/20, medium,
+  `ON_SURFACE_VARIANT`)
+- Body: `TypeRole::BodyMedium` (14/20)
+- Supporting: `TypeRole::BodySmall` (12/16)
+- Card and list title: `TypeRole::TitleSmall` or `TitleMedium`
+- Hero headline: `TypeRole::DisplaySmall.emphasized()` (36/44, medium)
+- Code and logs: `TypeRole::BodySmall` with an 18dp line height, monospace
 
-Text scale follows the kit's rem-based typography. The layout must tolerate a
-200% text scale without clipping controls.
+Use the kit's type roles instead of hand-written `text_size(px(...))` pairs so
+the rem-based text scale applies. The layout must tolerate a 200% text scale
+without clipping controls.
 
 ## Shape
 
@@ -72,7 +75,7 @@ Do not round everything to the same radius. The radius communicates hierarchy.
 
 | Need | Component |
 | --- | --- |
-| Navigation | `NavigationSuite` (bar/rail/drawer) |
+| Navigation | `NavigationSuite` (bar/rail); a compact `NavigationBar` when the suite's bar would widen the shell |
 | Page header | `TopAppBar` |
 | Actions | `MaterialButton`, `IconButton`, `Fab` |
 | Text input | `TextField` |
@@ -90,18 +93,24 @@ missing symbol to `SETTINGS` rather than panicking.
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│ TopAppBar: logo · page title · theme · language · gear│
+│ TopAppBar: logo · page title · theme · language · activity · gear│
 ├──────────────┬───────────────────────────────────────┤
 │ Navigation   │ Page content                          │
-│ (drawer/rail)│ max 1120dp, 32dp gutter               │
-│  New instance│                                       │
+│ (rail/bar)   │ max 1120dp, 32dp gutter               │
+│  + FAB       │                                       │
 └──────────────┴───────────────────────────────────────┘
 ```
 
-- At ≥ 840dp the suite shows a drawer with labels.
+- At ≥ 840dp the suite shows an expanded rail (`RailExpanded`) with labels.
 - At 600–839dp it shows a collapsed rail.
-- Below 600dp it shows a bottom navigation bar.
-- The content column is centred and scrolls independently.
+- Below 600dp it shows a bottom navigation bar with five destinations, plus
+  Activity and Settings in the top bar (or one overflow menu when they cannot
+  fit).
+- The primary “New instance” action is a FAB; it never uses the rail's full
+  width and never overflows a 96dp collapsed rail.
+- The content column is centred, is capped at 1120dp and scrolls
+  independently. It uses an explicit width (viewport minus navigation and the
+  32dp gutters) so padded surfaces cannot widen the shell.
 
 ## Do not
 

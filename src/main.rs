@@ -2,12 +2,12 @@ mod core;
 mod ui;
 
 use gpui_kit::{prelude::*, *};
-use gpui_kit_material::color::themes::{Contrast, ThemeId, ThemeMode};
+use gpui_kit_material::color::themes::ThemeMode;
 use gpui_kit_material::{icons::Assets, theme};
 
 use core::Paths;
 use core::settings::{self, ReduceMotion};
-use ui::Yuhina;
+use ui::{APP_CONTRAST, APP_THEME, Yuhina};
 
 fn window_size() -> Size<Pixels> {
     if let Ok(value) = std::env::var("YUHINA_SIZE")
@@ -35,7 +35,7 @@ fn main() {
             } else {
                 ThemeMode::Light
             };
-            let scheme = ThemeId::Baseline.scheme(mode, Contrast::Standard);
+            let scheme = APP_THEME.scheme(mode, APP_CONTRAST);
             theme::init_component_theme(scheme, 1.0, cx);
             cx.set_reduce_motion(matches!(settings.reduce_motion, ReduceMotion::On));
 
