@@ -10,6 +10,7 @@ pub mod install;
 pub mod instances;
 pub mod java;
 pub mod launch;
+pub mod loader;
 pub mod modrinth;
 pub mod news;
 pub mod paths;

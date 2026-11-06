@@ -27,6 +27,7 @@ pub enum InstallPhase {
     Libraries,
     Natives,
     Assets,
+    Loader,
     Done,
     Error,
 }
@@ -39,6 +40,7 @@ impl InstallPhase {
             InstallPhase::Libraries => "libraries",
             InstallPhase::Natives => "natives",
             InstallPhase::Assets => "assets",
+            InstallPhase::Loader => "loader",
             InstallPhase::Done => "done",
             InstallPhase::Error => "error",
         }
@@ -50,7 +52,8 @@ impl InstallPhase {
             InstallPhase::Client => (3.0, 12.0),
             InstallPhase::Libraries => (12.0, 32.0),
             InstallPhase::Natives => (32.0, 40.0),
-            InstallPhase::Assets => (40.0, 100.0),
+            InstallPhase::Assets => (40.0, 90.0),
+            InstallPhase::Loader => (90.0, 100.0),
             InstallPhase::Done | InstallPhase::Error => (100.0, 100.0),
         }
     }
@@ -408,6 +411,73 @@ pub fn install_loader_profile(
     }
     write_json(&path, &profile)?;
     Ok(id)
+}
+
+/// Everything the loader pipeline needs to know about the requested install.
+pub struct LoaderInstallRequest<'a> {
+    pub minecraft_version: &'a str,
+    pub loader: super::instances::LoaderType,
+    pub loader_version: Option<&'a str>,
+    pub java_settings: &'a super::settings::JavaSettings,
+    pub source: DownloadSource,
+}
+
+/// Installs any loader and returns the version id that should be launched.
+///
+/// Fabric and Quilt use a generated version profile followed by the normal
+/// vanilla install pipeline. Forge and NeoForge run their official installer,
+/// which populates the shared `versions/` and `libraries/` directories itself.
+pub fn install_loader<F>(
+    paths: &Paths,
+    request: LoaderInstallRequest<'_>,
+    cancel: Arc<AtomicBool>,
+    on_progress: F,
+) -> Result<String>
+where
+    F: Fn(InstallProgress) + Send + Sync,
+{
+    use super::instances::LoaderType;
+
+    if matches!(request.loader, LoaderType::Forge | LoaderType::Neoforge) {
+        let version = request.loader_version.ok_or_else(|| {
+            YuhinaError::new(
+                ErrorCode::InvalidInput,
+                format!("Choose a {} version first.", request.loader.label()),
+            )
+        })?;
+        return super::loader::install(
+            paths,
+            request.java_settings,
+            request.minecraft_version,
+            request.loader,
+            version,
+            cancel,
+            |progress, message| {
+                let mut value = InstallProgress::new(
+                    InstallPhase::Loader,
+                    90.0 + progress.clamp(0.0, 1.0) * 10.0,
+                );
+                value.message = Some(message.to_string());
+                on_progress(value);
+            },
+        );
+    }
+
+    let loader_id = install_loader_profile(
+        paths,
+        request.minecraft_version,
+        request.loader,
+        request.loader_version,
+    )?;
+    install(
+        paths,
+        &loader_id,
+        request.source,
+        false,
+        Arc::clone(&cancel),
+        on_progress,
+    )?;
+    Ok(loader_id)
 }
 
 fn install_client<F>(

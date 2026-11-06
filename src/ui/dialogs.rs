@@ -54,8 +54,7 @@ pub fn render(
                         .selected(app.create_version == value)
                         .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
                             if *on {
-                                this.create_version = value.clone();
-                                cx.notify();
+                                this.choose_create_version(value.clone(), cx);
                             }
                         }))
                         .into_any_element()
@@ -71,19 +70,102 @@ pub fn render(
             let loader_chips: Vec<AnyElement> = loaders
                 .into_iter()
                 .map(|(loader, label)| {
-                    let disabled = matches!(loader, LoaderType::Forge | LoaderType::Neoforge);
                     FilterChip::new(format!("create-loader-{label}"), label)
                         .selected(app.create_loader == loader)
-                        .disabled(disabled)
                         .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
                             if *on {
-                                this.create_loader = loader;
-                                cx.notify();
+                                this.choose_create_loader(loader, cx);
                             }
                         }))
                         .into_any_element()
                 })
                 .collect();
+            let loader_version_section =
+                if matches!(app.create_loader, LoaderType::Forge | LoaderType::Neoforge) {
+                    let body: AnyElement = if app.loader_versions_loading {
+                        div()
+                            .text_size(px(13.))
+                            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                            .child(i18n::tr(lang, "instances.loader_versions_loading"))
+                            .into_any_element()
+                    } else if let Some(error) = &app.loader_versions_error {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(color(ColorRole::ERROR))
+                                    .child(error.clone()),
+                            )
+                            .child(
+                                MaterialButton::new("create-loader-retry")
+                                    .variant(ButtonVariant::Text)
+                                    .child(i18n::tr(lang, "common.retry"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.refresh_loader_versions(cx)
+                                    })),
+                            )
+                            .into_any_element()
+                    } else if app.loader_versions.is_empty() {
+                        div()
+                            .text_size(px(13.))
+                            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                            .child(i18n::tr(lang, "instances.loader_versions_empty"))
+                            .into_any_element()
+                    } else {
+                        let chips: Vec<AnyElement> = app
+                            .loader_versions
+                            .iter()
+                            .map(|option| {
+                                let value = option.version.clone();
+                                let label = if option.recommended {
+                                    format!(
+                                        "{} · {}",
+                                        option.version,
+                                        i18n::tr(lang, "instances.loader_recommended")
+                                    )
+                                } else {
+                                    option.version.clone()
+                                };
+                                FilterChip::new(format!("create-loader-version-{value}"), label)
+                                    .selected(
+                                        app.create_loader_version.as_deref()
+                                            == Some(value.as_str()),
+                                    )
+                                    .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
+                                        if *on {
+                                            this.create_loader_version = Some(value.clone());
+                                            cx.notify();
+                                        }
+                                    }))
+                                    .into_any_element()
+                            })
+                            .collect();
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(8.))
+                            .children(chips)
+                            .into_any_element()
+                    };
+                    Some(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                                    .child(i18n::tr(lang, "instances.loader_version_hint")),
+                            )
+                            .child(body),
+                    )
+                } else {
+                    None
+                };
             let memory_chips: Vec<AnyElement> = [2048u32, 4096, 6144, 8192]
                 .into_iter()
                 .map(|mb| {
@@ -148,6 +230,7 @@ pub fn render(
                         )
                         .child(div().flex().flex_wrap().gap(px(8.)).children(loader_chips)),
                 )
+                .children(loader_version_section)
                 .child(
                     div()
                         .flex()

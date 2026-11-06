@@ -22,11 +22,12 @@ use crate::core::java::{self, JavaRuntime};
 use crate::core::launch::{
     self, GameLine, GameProcess, LaunchCredentials, LaunchRequest, ServerTarget,
 };
+use crate::core::loader::{self, LoaderVersion};
 use crate::core::modrinth::{self, SearchResult};
 use crate::core::news::{self, NewsState};
 use crate::core::servers::{self, ServerRecord, ServerStatus};
 use crate::core::settings::{
-    self as core_settings, DownloadSource, Language, Settings, ThemePreference,
+    self as core_settings, DownloadSource, JavaSettings, Language, Settings, ThemePreference,
 };
 use crate::core::updates::{self, UpdateInfo};
 use crate::core::version::{RuleContext, VersionManifest};
@@ -201,6 +202,11 @@ pub struct Yuhina {
     pub create_name: Entity<InputState>,
     pub create_version: String,
     pub create_loader: LoaderType,
+    pub create_loader_version: Option<String>,
+    pub loader_versions: Vec<LoaderVersion>,
+    pub loader_versions_loading: bool,
+    pub loader_versions_error: Option<String>,
+    loader_versions_key: Option<(LoaderType, String)>,
     pub create_memory: u32,
     pub account_name: Entity<InputState>,
     pub account_tab: AccountTab,
@@ -279,6 +285,11 @@ impl Yuhina {
             create_name,
             create_version: String::new(),
             create_loader: LoaderType::Vanilla,
+            create_loader_version: None,
+            loader_versions: Vec::new(),
+            loader_versions_loading: false,
+            loader_versions_error: None,
+            loader_versions_key: None,
             create_memory: 4096,
             account_name,
             account_tab: AccountTab::Offline,
@@ -428,6 +439,12 @@ impl Yuhina {
                     Ok(manifest) => {
                         if this.create_version.is_empty() {
                             this.create_version = manifest.latest.release.clone();
+                            if matches!(
+                                this.create_loader,
+                                LoaderType::Forge | LoaderType::Neoforge
+                            ) {
+                                this.refresh_loader_versions(cx);
+                            }
                         }
                         this.versions = Some(manifest);
                     }
@@ -608,6 +625,81 @@ impl Yuhina {
     // Instance commands
     // -----------------------------------------------------------------
 
+    pub fn choose_create_loader(&mut self, loader: LoaderType, cx: &mut Context<Self>) {
+        if self.create_loader == loader {
+            return;
+        }
+        self.create_loader = loader;
+        self.create_loader_version = None;
+        self.loader_versions.clear();
+        self.loader_versions_error = None;
+        self.loader_versions_loading = false;
+        if matches!(loader, LoaderType::Forge | LoaderType::Neoforge) {
+            self.refresh_loader_versions(cx);
+        } else {
+            self.loader_versions_key = None;
+            cx.notify();
+        }
+    }
+
+    pub fn choose_create_version(&mut self, version: String, cx: &mut Context<Self>) {
+        if self.create_version == version {
+            return;
+        }
+        self.create_version = version;
+        if matches!(self.create_loader, LoaderType::Forge | LoaderType::Neoforge) {
+            self.refresh_loader_versions(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    /// Loads the Forge/NeoForge builds for the selected Minecraft version.
+    pub fn refresh_loader_versions(&mut self, cx: &mut Context<Self>) {
+        let loader = self.create_loader;
+        let minecraft_version = self.create_version.clone();
+        self.create_loader_version = None;
+        self.loader_versions.clear();
+        self.loader_versions_error = None;
+
+        if !matches!(loader, LoaderType::Forge | LoaderType::Neoforge)
+            || minecraft_version.is_empty()
+        {
+            self.loader_versions_loading = false;
+            self.loader_versions_key = None;
+            cx.notify();
+            return;
+        }
+
+        self.loader_versions_loading = true;
+        self.loader_versions_key = Some((loader, minecraft_version.clone()));
+        cx.notify();
+        let discover_version = minecraft_version.clone();
+        spawn_task(
+            cx,
+            move || loader::discover(&discover_version, loader),
+            move |this, result, cx| {
+                if this.loader_versions_key.as_ref() != Some(&(loader, minecraft_version.clone())) {
+                    return;
+                }
+                this.loader_versions_loading = false;
+                match result {
+                    Ok(versions) => {
+                        this.create_loader_version =
+                            versions.first().map(|option| option.version.clone());
+                        this.loader_versions = versions;
+                        this.loader_versions_error = None;
+                    }
+                    Err(error) => {
+                        this.loader_versions.clear();
+                        this.loader_versions_error = Some(error.message);
+                    }
+                }
+                cx.notify();
+            },
+        );
+    }
+
     pub fn create_instance(&mut self, cx: &mut Context<Self>) {
         let name = self.create_name.read(cx).value().to_string();
         let name = if name.trim().is_empty() {
@@ -619,13 +711,23 @@ impl Yuhina {
             self.show_toast(self.t("instances.unknown_version"), true, cx);
             return;
         }
+        let uses_installer = matches!(self.create_loader, LoaderType::Forge | LoaderType::Neoforge);
+        if uses_installer && self.create_loader_version.is_none() {
+            self.show_toast(self.t("instances.loader_version_required"), true, cx);
+            return;
+        }
+        let loader_version = if uses_installer {
+            self.create_loader_version.clone()
+        } else {
+            None
+        };
         let paths = self.paths.clone();
         let new = instances::NewInstance {
             name,
             version_id: self.create_version.clone(),
             loader: instances::Loader {
                 kind: self.create_loader,
-                version: None,
+                version: loader_version,
             },
             memory_mb: self.create_memory,
             memory_mode: MemoryMode::Manual,
@@ -711,6 +813,7 @@ impl Yuhina {
             }
         };
         let source = self.settings.download_source;
+        let java_settings = self.settings.java.clone();
         let progress = Arc::new(Mutex::new(InstallProgress::new(
             InstallPhase::Metadata,
             0.0,
@@ -740,6 +843,7 @@ impl Yuhina {
                     &paths,
                     &record,
                     source,
+                    &java_settings,
                     Arc::clone(&background_progress),
                 );
                 *background_outcome.lock().unwrap() = Some(result);
@@ -1183,6 +1287,7 @@ fn install_instance_blocking(
     paths: &Paths,
     record: &InstanceRecord,
     source: DownloadSource,
+    java_settings: &JavaSettings,
     progress: Arc<Mutex<InstallProgress>>,
 ) -> crate::core::Result<()> {
     let cancel = Arc::new(AtomicBool::new(false));
@@ -1202,23 +1307,19 @@ fn install_instance_blocking(
     )?;
 
     if record.loader.kind != LoaderType::Vanilla {
-        let loader_id = install::install_loader_profile(
+        let loader_id = install::install_loader(
             paths,
-            &record.version_id,
-            record.loader.kind,
-            record.loader.version.as_deref(),
-        )?;
-        install::install(
-            paths,
-            &loader_id,
-            source,
-            false,
+            install::LoaderInstallRequest {
+                minecraft_version: &record.version_id,
+                loader: record.loader.kind,
+                loader_version: record.loader.version.as_deref(),
+                java_settings,
+                source,
+            },
             Arc::clone(&cancel),
             report(Arc::clone(&progress)),
         )?;
-        instances::update(paths, &record.id, |record| {
-            record.launch_version_id = Some(loader_id);
-        })?;
+        instances::set_launch_version_id(paths, &record.id, loader_id)?;
     }
 
     Ok(())

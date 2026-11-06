@@ -50,8 +50,9 @@ An instance is a self-contained game directory:
 - mods, resource packs, shader packs, worlds and screenshots
 - playtime and last-played time
 
-Create from a vanilla version with an optional loader. Forge and NeoForge are
-recognized but disabled until their installer pipeline lands.
+Create from a vanilla version with an optional loader. Fabric and Quilt use
+generated version profiles; Forge and NeoForge run their official installers
+inside the shared Minecraft directory.
 
 ## Accounts
 

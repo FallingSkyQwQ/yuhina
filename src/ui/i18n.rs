@@ -93,6 +93,17 @@ pub const ZH: &[(&str, &str)] = &[
     ("instances.name_placeholder", "我的生存世界"),
     ("instances.version_hint", "选择 Minecraft 版本"),
     ("instances.loader_hint", "加载器（可选）"),
+    ("instances.loader_version_hint", "加载器版本"),
+    ("instances.loader_versions_loading", "正在获取加载器版本…"),
+    (
+        "instances.loader_versions_empty",
+        "这个版本没有可用的加载器版本。",
+    ),
+    (
+        "instances.loader_version_required",
+        "请选择一个加载器版本。",
+    ),
+    ("instances.loader_recommended", "推荐"),
     ("instances.memory_hint", "分配给游戏的内存（MB）"),
     ("instances.creating", "创建中…"),
     ("instances.install_progress", "安装中"),
@@ -334,6 +345,20 @@ pub const EN: &[(&str, &str)] = &[
     ("instances.name_placeholder", "My survival world"),
     ("instances.version_hint", "Choose a Minecraft version"),
     ("instances.loader_hint", "Loader (optional)"),
+    ("instances.loader_version_hint", "Loader version"),
+    (
+        "instances.loader_versions_loading",
+        "Loading loader versions…",
+    ),
+    (
+        "instances.loader_versions_empty",
+        "No loader version is available for this game version.",
+    ),
+    (
+        "instances.loader_version_required",
+        "Choose a loader version.",
+    ),
+    ("instances.loader_recommended", "Recommended"),
     ("instances.memory_hint", "Memory allocated to the game (MB)"),
     ("instances.creating", "Creating…"),
     ("instances.install_progress", "Installing"),
