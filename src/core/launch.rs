@@ -129,6 +129,14 @@ impl GameProcess {
     }
 }
 
+impl Drop for GameProcess {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+        }
+    }
+}
+
 fn parse_version_triple(id: &str) -> Option<(u32, u32, u32)> {
     let mut pieces = id.split(['.', '-', '+']);
     let major = pieces.next()?.parse().ok()?;
