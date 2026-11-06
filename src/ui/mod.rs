@@ -22,12 +22,14 @@ use crate::core::java::{self, JavaRuntime};
 use crate::core::launch::{
     self, GameLine, GameProcess, LaunchCredentials, LaunchRequest, ServerTarget,
 };
+use crate::core::modpack;
 use crate::core::modrinth::{self, SearchResult};
 use crate::core::news::{self, NewsState};
 use crate::core::servers::{self, ServerRecord, ServerStatus};
 use crate::core::settings::{
     self as core_settings, DownloadSource, Language, Settings, ThemePreference,
 };
+use crate::core::skins;
 use crate::core::updates::{self, UpdateInfo};
 use crate::core::version::{RuleContext, VersionManifest};
 use crate::core::{Paths, YuhinaError};
@@ -109,6 +111,7 @@ pub struct Loading {
     pub java: bool,
     pub update: bool,
     pub library: bool,
+    pub modpack: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -134,6 +137,7 @@ pub enum Dialog {
         waiting: bool,
     },
     AddServer,
+    ImportModpack,
     DeleteInstance(String),
     ConfirmRemoveContent {
         instance_id: String,
@@ -180,6 +184,7 @@ pub struct Yuhina {
     pub page: Page,
     pub instances: Vec<InstanceSummary>,
     pub accounts: Vec<AccountSummary>,
+    pub skins: HashMap<String, Option<PathBuf>>,
     pub servers: Vec<ServerRecord>,
     pub statuses: HashMap<String, ServerStatus>,
     pub news: NewsState,
@@ -206,6 +211,7 @@ pub struct Yuhina {
     pub account_tab: AccountTab,
     pub server_name: Entity<InputState>,
     pub server_address: Entity<InputState>,
+    pub modpack_path: Entity<InputState>,
     pub authlib_server: Entity<InputState>,
     pub authlib_user: Entity<InputState>,
     pub authlib_password: Entity<InputState>,
@@ -235,12 +241,14 @@ impl Yuhina {
             Ok("create-instance") => Some(Dialog::CreateInstance),
             Ok("add-account") => Some(Dialog::AddAccount),
             Ok("add-server") => Some(Dialog::AddServer),
+            Ok("import-modpack") => Some(Dialog::ImportModpack),
             _ => None,
         };
         let create_name = cx.new(|cx| InputState::new(window, cx));
         let account_name = cx.new(|cx| InputState::new(window, cx));
         let server_name = cx.new(|cx| InputState::new(window, cx));
         let server_address = cx.new(|cx| InputState::new(window, cx));
+        let modpack_path = cx.new(|cx| InputState::new(window, cx));
         let authlib_server = cx.new(|cx| InputState::new(window, cx));
         let authlib_user = cx.new(|cx| InputState::new(window, cx));
         let authlib_password = cx.new(|cx| InputState::new(window, cx));
@@ -254,6 +262,7 @@ impl Yuhina {
             page,
             instances: Vec::new(),
             accounts: Vec::new(),
+            skins: HashMap::new(),
             servers: Vec::new(),
             statuses: HashMap::new(),
             news: NewsState {
@@ -284,6 +293,7 @@ impl Yuhina {
             account_tab: AccountTab::Offline,
             server_name,
             server_address,
+            modpack_path,
             authlib_server,
             authlib_user,
             authlib_password,
@@ -364,11 +374,53 @@ impl Yuhina {
             |this, result, cx| {
                 this.loading.accounts = false;
                 match result {
-                    Ok(items) => this.accounts = items,
+                    Ok(items) => {
+                        this.accounts = items;
+                        this.refresh_skins(cx);
+                    }
                     Err(error) => this.show_error(error, cx),
                 }
             },
         );
+    }
+
+    /// Downloads missing skin heads in the background. `None` marks a lookup
+    /// in flight so a refresh does not spawn it twice.
+    pub fn refresh_skins(&mut self, cx: &mut Context<Self>) {
+        let pending: Vec<(String, String)> = self
+            .accounts
+            .iter()
+            .filter(|account| !self.skins.contains_key(&account.id))
+            .filter_map(|account| {
+                account
+                    .skin_url
+                    .clone()
+                    .map(|url| (account.id.clone(), url))
+            })
+            .collect();
+        for (id, url) in pending {
+            self.skins.insert(id.clone(), None);
+            let paths = self.paths.clone();
+            let task_id = id.clone();
+            cx.spawn(async move |this, cx| {
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { skins::ensure_head(&paths, &id, &url) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    match result {
+                        Ok(path) => {
+                            this.skins.insert(task_id, Some(path));
+                        }
+                        Err(_) => {
+                            this.skins.remove(&task_id);
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
     pub fn refresh_servers(&mut self, cx: &mut Context<Self>) {
@@ -1112,6 +1164,10 @@ impl Yuhina {
     }
 
     pub fn install_from_library(&mut self, project_id: String, cx: &mut Context<Self>) {
+        if self.library_type == "modpack" {
+            self.install_modpack_project(project_id, cx);
+            return;
+        }
         let Some(target) = self.library_target.clone() else {
             self.show_toast(self.t("library.no_instance"), true, cx);
             return;
@@ -1141,6 +1197,68 @@ impl Yuhina {
                     cx,
                 ),
                 Err(error) => this.show_error(error, cx),
+            },
+        );
+    }
+
+    /// Modpacks are not content dropped into an existing instance: installing
+    /// one creates a fresh instance with its own loader and game directory.
+    pub fn install_modpack_project(&mut self, project_id: String, cx: &mut Context<Self>) {
+        if self.loading.modpack {
+            return;
+        }
+        self.loading.modpack = true;
+        let paths = self.paths.clone();
+        let source = self.settings.download_source;
+        let cancel = Arc::new(AtomicBool::new(false));
+        cx.notify();
+        spawn_task(
+            cx,
+            move || modpack::install_modrinth(&paths, &project_id, None, source, cancel, |_| {}),
+            |this, result, cx| {
+                this.loading.modpack = false;
+                match result {
+                    Ok(record) => {
+                        this.refresh_instances(cx);
+                        this.open_instance(record.id, cx);
+                        this.show_toast(this.t("library.modpack_done"), false, cx);
+                    }
+                    Err(error) => this.show_error(error, cx),
+                }
+            },
+        );
+    }
+
+    pub fn import_modpack(&mut self, cx: &mut Context<Self>) {
+        if self.loading.modpack {
+            return;
+        }
+        let value = self.modpack_path.read(cx).value().to_string();
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            self.show_toast(self.t("library.import_empty"), true, cx);
+            return;
+        }
+        let paths = self.paths.clone();
+        let source = self.settings.download_source;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let path = PathBuf::from(value);
+        self.loading.modpack = true;
+        self.dialog = None;
+        cx.notify();
+        spawn_task(
+            cx,
+            move || modpack::import_local(&paths, &path, source, cancel, |_| {}),
+            |this, result, cx| {
+                this.loading.modpack = false;
+                match result {
+                    Ok(record) => {
+                        this.refresh_instances(cx);
+                        this.open_instance(record.id, cx);
+                        this.show_toast(this.t("library.modpack_done"), false, cx);
+                    }
+                    Err(error) => this.show_error(error, cx),
+                }
             },
         );
     }

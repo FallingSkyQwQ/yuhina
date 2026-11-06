@@ -92,6 +92,7 @@ pub struct AccountSummary {
     pub server_name: Option<String>,
     pub owns_minecraft: Option<bool>,
     pub token_expires_at: Option<String>,
+    pub skin_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -170,6 +171,7 @@ fn summarize(file: &AccountsFile) -> Vec<AccountSummary> {
             server_name: account.server_name.clone(),
             owns_minecraft: account.owns_minecraft,
             token_expires_at: account.token_expires_at.clone(),
+            skin_url: account.skin_url.clone(),
         })
         .collect()
 }
@@ -870,6 +872,7 @@ pub fn ensure_authlib_injector(paths: &Paths) -> Result<PathBuf> {
         destination: destination.clone(),
         urls: vec![url.to_string()],
         sha1: None,
+        sha512: None,
         size: None,
         label: "authlib-injector".to_string(),
     };

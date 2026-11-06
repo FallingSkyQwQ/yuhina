@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use sha1::{Digest, Sha1};
+use sha2::Sha512;
 
 use super::http::USER_AGENT;
 use super::{ErrorCode, Result, YuhinaError};
@@ -15,6 +16,9 @@ pub struct DownloadTask {
     pub destination: PathBuf,
     pub urls: Vec<String>,
     pub sha1: Option<String>,
+    /// Used when the publisher only supplies a SHA-512 digest, as some
+    /// `.mrpack` indexes do.
+    pub sha512: Option<String>,
     pub size: Option<u64>,
     pub label: String,
 }
@@ -171,17 +175,36 @@ fn already_valid(task: &DownloadTask) -> bool {
     {
         return meta.len() == size;
     }
-    match &task.sha1 {
-        Some(expected) => hash_file(&task.destination)
+    if let Some(expected) = &task.sha1 {
+        return hash_file(&task.destination)
             .map(|actual| actual.eq_ignore_ascii_case(expected))
-            .unwrap_or(false),
-        None => true,
+            .unwrap_or(false);
     }
+    if let Some(expected) = &task.sha512 {
+        return hash_file_sha512(&task.destination)
+            .map(|actual| actual.eq_ignore_ascii_case(expected))
+            .unwrap_or(false);
+    }
+    true
 }
 
 pub fn hash_file(path: &std::path::Path) -> Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha1::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+pub fn hash_file_sha512(path: &std::path::Path) -> Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha512::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer)?;
@@ -235,7 +258,10 @@ where
 
     let mut reader = response.into_reader();
     let mut file = File::create(&part)?;
-    let mut hasher = Sha1::new();
+    let mut sha1 = Sha1::new();
+    let mut sha512 = Sha512::new();
+    let use_sha1 = task.sha1.is_some();
+    let use_sha512 = task.sha1.is_none() && task.sha512.is_some();
     let mut received: u64 = 0;
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -252,7 +278,12 @@ where
         if read == 0 {
             break;
         }
-        hasher.update(&buffer[..read]);
+        if use_sha1 {
+            sha1.update(&buffer[..read]);
+        }
+        if use_sha512 {
+            sha512.update(&buffer[..read]);
+        }
         file.write_all(&buffer[..read])?;
         received += read as u64;
         active_bytes.fetch_add(read as u64, Ordering::Relaxed);
@@ -272,7 +303,16 @@ where
         ));
     }
     if let Some(expected) = &task.sha1 {
-        let actual = hex::encode(hasher.finalize());
+        let actual = hex::encode(sha1.finalize());
+        if !actual.eq_ignore_ascii_case(expected) {
+            let _ = fs::remove_file(&part);
+            return Err(YuhinaError::new(
+                ErrorCode::Checksum,
+                "The downloaded file failed its checksum.",
+            ));
+        }
+    } else if let Some(expected) = &task.sha512 {
+        let actual = hex::encode(sha512.finalize());
         if !actual.eq_ignore_ascii_case(expected) {
             let _ = fs::remove_file(&part);
             return Err(YuhinaError::new(

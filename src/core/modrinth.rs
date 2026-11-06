@@ -365,6 +365,7 @@ fn install_recursive(
         destination: destination.clone(),
         urls: vec![file.url.clone()],
         sha1: file.sha1.clone(),
+        sha512: file.sha512.clone(),
         size: if file.size > 0 { Some(file.size) } else { None },
         label: selected.name.clone(),
     };

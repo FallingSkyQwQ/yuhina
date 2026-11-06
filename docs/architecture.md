@@ -44,6 +44,7 @@ java/<major>/                 managed Temurin runtimes
 logs/instances/<id>/*.log     launch logs
 downloads/                    partial files and Java archives
 cache/mojang-news.json        news cache
+cache/skins/<id>.png          cached skin-head avatars
 ```
 
 All JSON writes are atomic: write a sibling temp file, `sync_all`, rename.
@@ -94,12 +95,21 @@ Classpath order: client jar, then libraries in metadata order. Natives are
 extracted into the root version's `natives/` directory and added through
 `-Djava.library.path`.
 
+`.mrpack` import reads `modrinth.index.json`, installs the declared loader
+(Fabric and Quilt through the profile pipeline), downloads the pack files with
+SHA checks, and extracts `overrides/` then `client-overrides/` into the new
+instance's game directory. Forge and NeoForge packs are typed as unsupported
+until their installers land.
+
+Server status pings resolve `_minecraft._tcp.<host>` through the system
+resolver, connect to the SRV target, and keep the original hostname in the
+handshake. The client falls back to the literal address when there is no SRV
+record.
+
 ## Known gaps
 
 - Forge and NeoForge installer pipelines
-- `.mrpack` modpack import
-- SRV lookup for server addresses
 - Per-instance file browser and backup/restore
-- Skin head rendering (accounts use monogram avatars)
+- Non-Microsoft skin profiles for head avatars
 - In-app updater (the app links to the release page)
 - Native title bar theming is left to the platform

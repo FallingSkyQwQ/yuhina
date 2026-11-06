@@ -96,6 +96,7 @@ recognized but disabled until their installer pipeline lands.
 
 - Saved server list with name, address, port and optional icon.
 - Java status protocol ping with latency, player counts and MOTD.
+- `_minecraft._tcp` SRV lookup before ping/join, with literal fallback.
 - One-click join: launch the selected (or first installed) instance with the
   server target.
 - Add and remove servers.
@@ -105,8 +106,9 @@ recognized but disabled until their installer pipeline lands.
 - Search projects by type, loader and game version.
 - Install a project and its required dependencies into the selected instance.
 - Resource packs and shaders install into their own folders.
+- Modpacks install as a new isolated instance with their declared loader.
+- Import a local `.mrpack` by path.
 - Remove installed files.
-- Modpack installation is a known gap in this phase.
 
 ## Internationalization
 
