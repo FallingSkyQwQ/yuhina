@@ -44,6 +44,7 @@ java/<major>/                 managed Temurin runtimes
 logs/instances/<id>/*.log     launch logs
 downloads/                    partial files and Java archives
 cache/mojang-news.json        news cache
+cache/skins/<id>.png          cached skin-head avatars
 ```
 
 All JSON writes are atomic: write a sibling temp file, `sync_all`, rename.
@@ -99,10 +100,26 @@ Classpath order: client jar, then libraries in metadata order. Natives are
 extracted into the root version's `natives/` directory and added through
 `-Djava.library.path`.
 
+`.mrpack` import reads `modrinth.index.json`, installs the declared loader
+(Fabric and Quilt through the profile pipeline), downloads the pack files with
+SHA checks, and extracts `overrides/` then `client-overrides/` into the new
+instance's game directory. Forge and NeoForge packs currently return a typed
+unsupported error until this path is wired to the installer pipeline.
+
+Server status pings resolve `_minecraft._tcp.<host>` through the system
+resolver, connect to the SRV target, and keep the original hostname in the
+handshake. The client falls back to the literal address when there is no SRV
+record.
+
 ## Known gaps
 
-- `.mrpack` modpack import
-- SRV lookup for server addresses
-- Skin head rendering (accounts use monogram avatars)
-- In-app updater (the app links to the release page)
-- Native title bar theming is left to the platform
+- NeoForge 1.20.1 uses the legacy `net/neoforged/forge` artifact and is not
+  offered; NeoForge 1.20.2+ is supported.
+- Forge and NeoForge modpacks return a typed unsupported error.
+- Modpack imports show an importing state and a completion toast rather than
+  per-file Activity progress.
+- Skin heads are fetched for Microsoft accounts only; LittleSkin/authlib
+  textures fall back to monograms.
+- Installer output is surfaced on failure, not streamed into the Activity log.
+- In-app updater (the app links to the release page).
+- Native title bar theming is left to the platform.

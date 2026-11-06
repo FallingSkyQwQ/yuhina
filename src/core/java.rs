@@ -311,6 +311,7 @@ where
         destination: archive.clone(),
         urls: vec![release.binary.package.link.clone()],
         sha1: None,
+        sha512: None,
         size: None,
         label: format!("Java {major}"),
     };

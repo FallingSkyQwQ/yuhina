@@ -32,7 +32,7 @@ impl LoaderType {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Loader {
     #[serde(rename = "type")]

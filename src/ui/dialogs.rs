@@ -496,6 +496,44 @@ pub fn render(
                     .into_any_element(),
             )
         }
+        Dialog::ImportModpack => {
+            let content = div()
+                .flex()
+                .flex_col()
+                .gap(px(16.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(20.))
+                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                        .child(i18n::tr(lang, "library.import_hint")),
+                )
+                .child(
+                    div().w_full().child(
+                        TextField::new("modpack-path", &app.modpack_path)
+                            .w_full()
+                            .label(i18n::tr(lang, "library.import_path")),
+                    ),
+                );
+            Some(
+                MaterialDialog::new("import-modpack-dialog")
+                    .headline(i18n::tr(lang, "library.import_title"))
+                    .size(DialogSize::Small)
+                    .max_width(560.0)
+                    .modal(true)
+                    .content(content)
+                    .action(cancel_button(cx, lang))
+                    .action(
+                        MaterialButton::new("import-modpack-confirm")
+                            .variant(ButtonVariant::Filled)
+                            .icon(material_icon("upload_file", 18.0))
+                            .child(i18n::tr(lang, "library.import_confirm"))
+                            .on_click(cx.listener(|this, _, _, cx| this.import_modpack(cx))),
+                    )
+                    .on_dismiss(dismiss)
+                    .into_any_element(),
+            )
+        }
         Dialog::DeleteInstance(id) => {
             let target = id.clone();
             Some(

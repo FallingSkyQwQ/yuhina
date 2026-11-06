@@ -485,6 +485,7 @@ where
         destination: installer_path.clone(),
         urls: vec![url],
         sha1: None,
+        sha512: None,
         size: None,
         label: format!("{} {loader_version} installer", loader.label()),
     };

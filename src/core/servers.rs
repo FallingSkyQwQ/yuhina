@@ -1,7 +1,8 @@
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
+use hickory_resolver::proto::rr::RData;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -12,6 +13,24 @@ use super::{ErrorCode, Result, YuhinaError};
 pub const PING_TIMEOUT_MS: u64 = 8_000;
 const PROTOCOL_VERSION: i32 = 767;
 const MAX_PACKET_BYTES: usize = 1024 * 1024;
+
+/// The address to open a TCP connection to, plus the hostname that goes into
+/// the Minecraft handshake. They differ when an SRV record redirects traffic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerEndpoint {
+    pub connect_host: String,
+    pub connect_port: u16,
+    pub handshake_host: String,
+    pub handshake_port: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SrvRecord {
+    pub priority: u16,
+    pub weight: u16,
+    pub port: u16,
+    pub target: String,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,14 +171,122 @@ pub fn format_address(host: &str, port: u16) -> String {
     }
 }
 
+/// The SRV query name for a Minecraft Java server, or `None` when the host is
+/// already an IP literal.
+pub fn srv_lookup_name(host: &str) -> Option<String> {
+    let host = host.trim().trim_end_matches('.');
+    if host.is_empty() || host.parse::<IpAddr>().is_ok() {
+        return None;
+    }
+    Some(format!("_minecraft._tcp.{host}."))
+}
+
+/// Only an implicit/default port is eligible for SRV: an explicitly entered
+/// `host:port` is what the player asked for.
+pub fn should_lookup_srv(host: &str, port: u16) -> bool {
+    port == 25565 && srv_lookup_name(host).is_some()
+}
+
+/// Picks the RFC 2782 target: the lowest priority, then the highest weight,
+/// then a stable lexical tie-break. A target of `.` means the service is not
+/// offered and is ignored.
+pub fn select_srv(records: &[SrvRecord]) -> Option<SrvRecord> {
+    records
+        .iter()
+        .filter(|record| !record.target.is_empty() && record.target != ".")
+        .min_by(|a, b| {
+            a.priority
+                .cmp(&b.priority)
+                .then_with(|| b.weight.cmp(&a.weight))
+                .then_with(|| a.target.cmp(&b.target))
+                .then_with(|| a.port.cmp(&b.port))
+        })
+        .cloned()
+}
+
+fn endpoint_for(host: &str, port: u16, record: Option<SrvRecord>) -> ServerEndpoint {
+    let handshake_host = host.trim().trim_end_matches('.').to_string();
+    match record {
+        Some(record) => ServerEndpoint {
+            connect_host: record.target.trim_end_matches('.').to_string(),
+            connect_port: record.port,
+            handshake_host,
+            handshake_port: port,
+        },
+        None => ServerEndpoint {
+            connect_host: handshake_host.clone(),
+            connect_port: port,
+            handshake_host,
+            handshake_port: port,
+        },
+    }
+}
+
+/// Resolves `_minecraft._tcp.<host>` and falls back to the literal host:port
+/// on NXDOMAIN, no SRV record, or any resolver failure.
+pub fn resolve_endpoint(host: &str, port: u16) -> ServerEndpoint {
+    let record = if should_lookup_srv(host, port) {
+        lookup_srv(host).unwrap_or(None)
+    } else {
+        None
+    };
+    endpoint_for(host, port, record)
+}
+
+fn lookup_srv(host: &str) -> Result<Option<SrvRecord>> {
+    let Some(name) = srv_lookup_name(host) else {
+        return Ok(None);
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            YuhinaError::new(
+                ErrorCode::Network,
+                format!("The DNS runtime could not start: {error}"),
+            )
+        })?;
+    let result = runtime.block_on(async move {
+        let resolver = hickory_resolver::Resolver::builder_tokio()
+            .map_err(|error| YuhinaError::new(ErrorCode::Network, error.to_string()))?
+            .build()
+            .map_err(|error| YuhinaError::new(ErrorCode::Network, error.to_string()))?;
+        let lookup = resolver
+            .srv_lookup(name)
+            .await
+            .map_err(|error| YuhinaError::new(ErrorCode::Network, error.to_string()))?;
+        let mut records = Vec::new();
+        for record in lookup.answers() {
+            if let RData::SRV(srv) = &record.data {
+                records.push(SrvRecord {
+                    priority: srv.priority,
+                    weight: srv.weight,
+                    port: srv.port,
+                    target: srv.target.to_utf8(),
+                });
+            }
+        }
+        Ok::<_, YuhinaError>(records)
+    });
+    match result {
+        Ok(records) => Ok(select_srv(&records)),
+        // NXDOMAIN, no SRV records and transient resolver failures all mean
+        // "use the literal address".
+        Err(_) => Ok(None),
+    }
+}
+
 pub fn ping(host: &str, port: u16) -> Result<ServerStatus> {
     let started = Instant::now();
-    let address = (host, port).to_socket_addrs().map_err(|error| {
-        YuhinaError::new(
-            ErrorCode::Network,
-            format!("The server host could not be resolved: {error}"),
-        )
-    })?;
+    let endpoint = resolve_endpoint(host, port);
+    let address = (endpoint.connect_host.as_str(), endpoint.connect_port)
+        .to_socket_addrs()
+        .map_err(|error| {
+            YuhinaError::new(
+                ErrorCode::Network,
+                format!("The server host could not be resolved: {error}"),
+            )
+        })?;
     let mut last_error = None;
     let mut stream = None;
     for addr in address {
@@ -188,8 +315,8 @@ pub fn ping(host: &str, port: u16) -> Result<ServerStatus> {
     let mut handshake = Vec::new();
     write_varint(&mut handshake, 0x00);
     write_varint(&mut handshake, PROTOCOL_VERSION);
-    write_string(&mut handshake, host);
-    handshake.extend_from_slice(&port.to_be_bytes());
+    write_string(&mut handshake, &endpoint.handshake_host);
+    handshake.extend_from_slice(&endpoint.handshake_port.to_be_bytes());
     write_varint(&mut handshake, 1);
     let mut packet = Vec::new();
     write_varint(&mut packet, handshake.len() as i32);
@@ -388,5 +515,90 @@ mod tests {
             "play.example.com:25566"
         );
         assert_eq!(format_address("::1", 25566), "[::1]:25566");
+    }
+
+    #[test]
+    fn srv_names_are_built_only_for_hostnames() {
+        assert_eq!(
+            srv_lookup_name("play.example.com").as_deref(),
+            Some("_minecraft._tcp.play.example.com.")
+        );
+        assert_eq!(
+            srv_lookup_name(" play.example.com. ").as_deref(),
+            Some("_minecraft._tcp.play.example.com.")
+        );
+        assert_eq!(srv_lookup_name("127.0.0.1"), None);
+        assert_eq!(srv_lookup_name("::1"), None);
+        assert_eq!(srv_lookup_name(""), None);
+    }
+
+    #[test]
+    fn srv_is_only_used_for_the_default_port() {
+        assert!(should_lookup_srv("play.example.com", 25565));
+        assert!(!should_lookup_srv("play.example.com", 25566));
+        assert!(!should_lookup_srv("127.0.0.1", 25565));
+    }
+
+    #[test]
+    fn srv_selection_prefers_priority_then_weight() {
+        let records = vec![
+            SrvRecord {
+                priority: 10,
+                weight: 1,
+                port: 25566,
+                target: "low.example.com".into(),
+            },
+            SrvRecord {
+                priority: 5,
+                weight: 1,
+                port: 25567,
+                target: "busy.example.com".into(),
+            },
+            SrvRecord {
+                priority: 5,
+                weight: 20,
+                port: 25568,
+                target: "quiet.example.com".into(),
+            },
+            SrvRecord {
+                priority: 1,
+                weight: 999,
+                port: 25569,
+                target: ".".into(),
+            },
+        ];
+        let selected = select_srv(&records).unwrap();
+        assert_eq!(selected.target, "quiet.example.com");
+        assert_eq!(selected.port, 25568);
+        assert!(select_srv(&[]).is_none());
+    }
+
+    #[test]
+    fn literal_address_is_the_fallback() {
+        let literal = endpoint_for("play.example.com", 25565, None);
+        assert_eq!(
+            literal,
+            ServerEndpoint {
+                connect_host: "play.example.com".into(),
+                connect_port: 25565,
+                handshake_host: "play.example.com".into(),
+                handshake_port: 25565,
+            }
+        );
+
+        let redirected = endpoint_for(
+            "play.example.com",
+            25565,
+            Some(SrvRecord {
+                priority: 0,
+                weight: 0,
+                port: 25570,
+                target: "node.example.net.".into(),
+            }),
+        );
+        assert_eq!(redirected.connect_host, "node.example.net");
+        assert_eq!(redirected.connect_port, 25570);
+        assert_eq!(redirected.handshake_host, "play.example.com");
+        assert_eq!(redirected.handshake_port, 25565);
     }
 }

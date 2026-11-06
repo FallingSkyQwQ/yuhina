@@ -1641,11 +1641,24 @@ fn settings_tab(app: &Yuhina, cx: &mut Context<Yuhina>, record: &InstanceRecord)
 // ---------------------------------------------------------------------------
 
 fn library(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
-    let header = page_header(app, "library.title", "library.subtitle", None);
+    let actions = Some(
+        MaterialButton::new("library-import-modpack")
+            .variant(ButtonVariant::Tonal)
+            .icon(material_icon("upload_file", 20.0))
+            .child(app.t("library.import"))
+            .disabled(app.loading.modpack)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.dialog = Some(Dialog::ImportModpack);
+                cx.notify();
+            }))
+            .into_any_element(),
+    );
+    let header = page_header(app, "library.title", "library.subtitle", actions);
     let types = [
         ("mod", "library.mods"),
         ("resourcepack", "library.resourcepacks"),
         ("shader", "library.shaders"),
+        ("modpack", "library.modpacks"),
     ];
     let type_chips: Vec<AnyElement> = types
         .into_iter()
@@ -1805,7 +1818,11 @@ fn library(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> 
                         }),
                 ),
         )
-        .child(if app.loading.library {
+        .child(if app.loading.modpack {
+            panel()
+                .child(muted(app.t("library.importing")))
+                .into_any_element()
+        } else if app.loading.library {
             panel()
                 .child(muted(app.t("library.searching")))
                 .into_any_element()
@@ -1872,6 +1889,14 @@ fn accounts_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina
                 crate::core::accounts::AccountKind::Offline => app.t("accounts.offline"),
                 crate::core::accounts::AccountKind::Littleskin => app.t("accounts.littleskin"),
             };
+            let avatar = Avatar::new(
+                format!("account-avatar-{}", account.id),
+                account.name.clone(),
+            );
+            let avatar = match app.skins.get(&account.id).and_then(|path| path.clone()) {
+                Some(path) => avatar.image(path),
+                None => avatar.monogram(monogram_initials(&account.name)),
+            };
             div()
                 .w_full()
                 .rounded(px(20.))
@@ -1884,13 +1909,7 @@ fn accounts_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina
                 .flex()
                 .items_center()
                 .gap(px(14.))
-                .child(
-                    Avatar::new(
-                        format!("account-avatar-{}", account.id),
-                        account.name.clone(),
-                    )
-                    .monogram(monogram_initials(&account.name)),
-                )
+                .child(avatar)
                 .child(
                     div()
                         .flex()
@@ -2135,14 +2154,25 @@ fn join_server_target(app: &mut Yuhina, server: &ServerRecord, cx: &mut Context<
         app.show_toast(app.t("library.no_instance"), true, cx);
         return;
     };
-    app.launch_instance(
-        instance,
-        Some(ServerTarget {
-            host: server.address.clone(),
-            port: server.port,
-            quick_play: true,
-        }),
+    let host = server.address.clone();
+    let port = server.port;
+    // Resolve before joining, off the UI thread. Minecraft's own client does
+    // the SRV lookup again for `--quickPlayMultiplayer`, so the original
+    // hostname (not the SRV target) is what goes into the launch arguments.
+    super::spawn_task(
         cx,
+        move || servers::resolve_endpoint(&host, port),
+        move |this, endpoint, cx| {
+            this.launch_instance(
+                instance,
+                Some(ServerTarget {
+                    host: endpoint.handshake_host,
+                    port: endpoint.handshake_port,
+                    quick_play: true,
+                }),
+                cx,
+            )
+        },
     );
 }
 

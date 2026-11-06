@@ -32,6 +32,8 @@ pub enum InstallPhase {
     Restore,
     Export,
     Import,
+    Modpack,
+    Overrides,
     Done,
     Error,
 }
@@ -49,6 +51,8 @@ impl InstallPhase {
             InstallPhase::Restore => "restore",
             InstallPhase::Export => "export",
             InstallPhase::Import => "import",
+            InstallPhase::Modpack => "modpack",
+            InstallPhase::Overrides => "overrides",
             InstallPhase::Done => "done",
             InstallPhase::Error => "error",
         }
@@ -62,6 +66,8 @@ impl InstallPhase {
             InstallPhase::Natives => (32.0, 40.0),
             InstallPhase::Assets => (40.0, 90.0),
             InstallPhase::Loader => (90.0, 100.0),
+            InstallPhase::Modpack => (40.0, 92.0),
+            InstallPhase::Overrides => (92.0, 99.0),
             InstallPhase::Backup
             | InstallPhase::Restore
             | InstallPhase::Export
@@ -529,6 +535,7 @@ where
         destination,
         urls: candidate_urls(&client.url, Some(version_id), "client", source),
         sha1: client.sha1.clone(),
+        sha512: None,
         size: client.size,
         label: format!("{version_id} client"),
     };
@@ -557,6 +564,7 @@ fn build_library_tasks(
             destination,
             urls: candidate_urls(&library.url, None, "library", source),
             sha1: library.sha1.clone(),
+            sha512: None,
             size: library.size,
             label: library.name.clone(),
         });
@@ -685,6 +693,7 @@ where
             destination: index_path.clone(),
             urls: candidate_urls(&index.url, None, "asset-index", source),
             sha1: index.sha1.clone(),
+            sha512: None,
             size: index.size,
             label: format!("{index_id} asset index"),
         };
@@ -722,6 +731,7 @@ where
                 source,
             ),
             sha1: Some(object.hash.clone()),
+            sha512: None,
             size: Some(object.size),
             label: "asset".to_string(),
         });
