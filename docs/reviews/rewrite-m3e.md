@@ -163,6 +163,10 @@ Screenshots live in `design/reviews/rewrite-m3e/`:
 
 ## Git
 
-- Branch: `feat/rewrite-m3e` (created from the new `main`).
-- The old history and releases were removed before the first commit.
-- No push was performed.
+- Branch: `feat/rewrite-m3e`.
+- Rewrite commit: `b9682ae90b383e256875ee39db5099eb49556e2a`.
+- The old `.git` history, tags `v0.1.0`–`v0.1.3`, GitHub releases and local
+  release artifacts were deleted.
+- Remote `main` and `develop` were force-updated to the rewrite commit, so the
+  previous history is no longer reachable from those branches.
+- No backup was kept.
