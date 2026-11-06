@@ -87,8 +87,13 @@ callback, so the scheme animates instead of snapping.
 
 Version metadata is resolved from the manifest and merged through
 `inheritsFrom` chains. Loader profiles (Fabric, Quilt) are fetched from their
-meta APIs and written under `versions/<loader-id>/`. The installer downloads
-the parent vanilla version first, then the loader libraries.
+meta APIs and written under `versions/<loader-id>/`. Forge and NeoForge use
+their official installer jars: the launcher downloads the installer into
+`downloads/`, resolves a compatible Java runtime, runs
+`java -jar <installer> --installClient` with `minecraft/` as the working
+directory, then records the version profile the installer produced. The
+launcher installs the vanilla parent first, so the installer has a profile to
+inherit from; the installer then writes the loader profile and its libraries.
 
 Classpath order: client jar, then libraries in metadata order. Natives are
 extracted into the root version's `natives/` directory and added through
@@ -96,7 +101,6 @@ extracted into the root version's `natives/` directory and added through
 
 ## Known gaps
 
-- Forge and NeoForge installer pipelines
 - `.mrpack` modpack import
 - SRV lookup for server addresses
 - Per-instance file browser and backup/restore

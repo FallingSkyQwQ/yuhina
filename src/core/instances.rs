@@ -218,6 +218,19 @@ pub fn update(
     Ok(record)
 }
 
+/// Records the version profile the launcher should start, which differs from
+/// `version_id` once a loader installer has produced a child profile.
+pub fn set_launch_version_id(
+    paths: &Paths,
+    id: &str,
+    launch_version_id: impl Into<String>,
+) -> Result<InstanceRecord> {
+    let launch_version_id = launch_version_id.into();
+    update(paths, id, |record| {
+        record.launch_version_id = Some(launch_version_id);
+    })
+}
+
 pub fn delete(paths: &Paths, id: &str, keep_files: bool) -> Result<()> {
     let record = load(paths, id)?;
     if !keep_files {
@@ -336,5 +349,39 @@ pub fn relative_created(created_at: &str) -> String {
         n if n < 30 => format!("{n} days ago"),
         n if n < 365 => format!("{} months ago", n / 30),
         n => format!("{} years ago", n / 365),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_version_id_is_persisted() {
+        let root = std::env::temp_dir().join(format!("yuhina-instances-{}", uuid::Uuid::new_v4()));
+        let paths = Paths::at(root.clone());
+        let record = create(
+            &paths,
+            NewInstance {
+                name: "Test".to_string(),
+                version_id: "1.21.1".to_string(),
+                loader: Loader {
+                    kind: LoaderType::Neoforge,
+                    version: Some("21.1.209".to_string()),
+                },
+                memory_mb: 4096,
+                memory_mode: MemoryMode::Manual,
+                icon: None,
+            },
+        )
+        .unwrap();
+
+        set_launch_version_id(&paths, &record.id, "neoforge-21.1.209").unwrap();
+        let loaded = load(&paths, &record.id).unwrap();
+        assert_eq!(loaded.launch_version(), "neoforge-21.1.209");
+        assert_eq!(loaded.loader.version.as_deref(), Some("21.1.209"));
+        assert_eq!(loaded.version_id, "1.21.1");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
