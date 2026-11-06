@@ -70,7 +70,7 @@ A headless, GPUI-free launcher engine:
 | Instances (list, create, duplicate, delete, detail) | Ported |
 | Vanilla install / repair | Ported |
 | Fabric / Quilt profile install | Ported |
-| Forge / NeoForge | Recognised, disabled (installer pipeline missing) |
+| Forge / NeoForge | Ported (NeoForge 1.20.2+; 1.20.1 legacy artifact not offered) |
 | Launch, classpath, natives, assets, quick-play | Ported |
 | Logs and crash classification | Ported (basic classifier) |
 | Microsoft device-code login | Ported |
@@ -82,15 +82,15 @@ A headless, GPUI-free launcher engine:
 | Download sources (auto/BMCL/official) | Ported |
 | Modrinth search/install/dependencies | Ported |
 | Resource packs / shaders | Ported |
-| Modrinth modpacks (`.mrpack`) | Not yet |
-| Server list, ping, join | Ported (no SRV lookup) |
+| Modrinth modpacks (`.mrpack`) | Ported for Fabric/Quilt; Forge/NeoForge return Unsupported |
+| Server list, ping, join | Ported with SRV lookup and fallback |
 | Mojang news | Ported (10-minute cache + fallback) |
 | Update check | Ported (links to the release page; no in-app installer) |
 | Settings (theme, language, motion, downloads, Java, memory, about) | Ported |
-| Backups / restore | Not yet |
-| Export / import | Not yet |
-| Per-instance file browser | Not yet |
-| Skin-head rendering | Not yet (monogram avatars) |
+| Backups / restore | Ported (zip + safety copy on restore) |
+| Export / import | Ported (instance zip) |
+| Per-instance file browser | Ported (read-only, 64 KB text preview) |
+| Skin-head rendering | Ported for Microsoft accounts; monograms elsewhere |
 | Drag-and-drop import | Not yet |
 | Command palette | Not yet |
 | Tray / close-to-tray | Not yet |
@@ -122,7 +122,7 @@ final code does not use them.
 ```bash
 cargo fmt --all --check        # clean
 cargo clippy --all-targets     # no warnings
-cargo test                     # 14 passed
+cargo test                     # 42 passed
 cargo build                    # debug binary built
 ```
 
@@ -137,6 +137,7 @@ Screenshots live in `design/reviews/rewrite-m3e/`:
 - `activity-native.png`
 - `settings-native-dark.png`, `settings-native-light.png`
 - `dialog-create-instance.png`, `dialog-add-account.png`
+- `dialog-create-forge.png`, `instance-backups.png`, `instance-files.png`
 
 ### Screenshot notes
 
@@ -150,21 +151,24 @@ Screenshots live in `design/reviews/rewrite-m3e/`:
 
 ## Known gaps
 
-1. Forge / NeoForge installer pipeline.
-2. `.mrpack` modpack import.
-3. SRV lookup for servers.
-4. Backups, restore, export/import, per-instance file browser.
-5. Skin texture download/crop (monogram avatars for now).
+1. NeoForge 1.20.1 uses the legacy `net/neoforged/forge` artifact and is not
+   offered.
+2. Forge/NeoForge modpacks return a typed unsupported error.
+3. Modpack import shows an importing state, not per-file Activity progress.
+4. LittleSkin/authlib skin textures are not fetched (monograms fallback).
+5. Installer output is surfaced on failure, not streamed into Activity.
 6. Drag-and-drop import and a command palette.
 7. In-app update installation (the release page opens in the browser).
 8. Custom title bar to theme the caption area with the app.
-9. The installer's "Logs" tab is only populated for a running game in this
-   phase; reading the last log file after restart is not wired into the UI yet.
+9. The Logs tab only shows live logs for a game started in this session; the
+   last log file is not reloaded after restart.
 
 ## Git
 
 - Branch: `feat/rewrite-m3e`.
-- Rewrite commit: `b9682ae90b383e256875ee39db5099eb49556e2a`.
+- Rewrite commit: `b9682ae90b383e256875ee39db5099eb49556e2a`; Forge/NeoForge,
+  backups/export/file browser and modpack/SRV/skin branches were merged
+  afterward.
 - The old `.git` history, tags `v0.1.0`–`v0.1.3`, GitHub releases and local
   release artifacts were deleted.
 - Remote `main` and `develop` were force-updated to the rewrite commit, so the

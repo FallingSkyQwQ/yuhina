@@ -14,16 +14,18 @@ Yuhina 可以安装并启动 Minecraft，把每个世界放在独立实例中，
 
 ## 功能
 
-- **实例** —— 目前支持原版、Fabric 与 Quilt；Forge / NeoForge 已识别但暂时禁用。
+- **实例** —— 支持原版、Fabric、Quilt、Forge 与 NeoForge（NeoForge 1.20.2+）。
   每个实例拥有独立游戏目录、内存、JVM 参数与日志。
 - **启动** —— 版本元数据合并、库与资源下载、SHA-1 校验、natives 解压、Java
   选择、快速加入服务器。
 - **账户** —— Microsoft 设备代码登录、离线账户、LittleSkin / authlib 服务器。
-  令牌只保存在系统密钥库中。
+  令牌只保存在系统密钥库中；可用时自动获取并裁剪 Microsoft 皮肤头像。
 - **Java** —— 自动检测已有运行时，并在缺失时下载 Eclipse Temurin。
-- **服务器** —— 收藏服务器、状态 ping（MOTD / 玩家 / 延迟）、一键加入。
-- **Modrinth** —— 按类型 / 加载器 / 版本搜索，自动解析依赖，安装资源包与光影，
-  支持移除文件。
+- **服务器** —— 收藏服务器、支持 SRV 的状态 ping（MOTD / 玩家 / 延迟）、一键加入。
+- **Modrinth** —— 按类型 / 加载器 / 版本搜索，自动解析依赖，安装资源包、光影与
+  整合包，支持移除文件。
+- **备份与文件** —— zip 备份（恢复前自动创建安全副本）、实例导出/导入、
+  只读文件浏览器与文本预览。
 - **Material 3 Expressive 界面** —— 自适应导航栏 / 导航轨 / 抽屉、色调表面、
   Expressive 字体、深色与浅色主题、中文与英文。
 
@@ -64,15 +66,17 @@ cargo build --release
 
 ## 状态与已知缺口
 
-这是一个早期重写版本。原版、Fabric、Quilt 实例，Microsoft / 离线 / LittleSkin
-账户，Modrinth 模组、服务器与设置已经可用。已知缺口：
+这是一个早期重写版本。原版、Fabric、Quilt、Forge、NeoForge 实例，
+Microsoft / 离线 / LittleSkin 账户，Modrinth 模组与整合包，备份、服务器与设置
+已经可用。已知缺口：
 
-- Forge / NeoForge 安装流程
-- `.mrpack` 整合包导入
-- 服务器地址 SRV 查询
-- 实例文件浏览器、备份恢复、导入导出
-- 皮肤头像渲染（账户目前使用字母头像）
-- 应用内更新（检查更新只跳转到 release 页面）
+- NeoForge 1.20.1 使用旧的 Forge 制品，暂不提供；
+- Forge / NeoForge 整合包返回明确的“不支持”错误；
+- 整合包导入只显示导入状态，没有逐文件 Activity 进度；
+- LittleSkin / authlib 皮肤纹理尚未获取（回退为字母头像）；
+- 安装器输出仅在失败时展示，未逐行写入 Activity；
+- 应用内更新（检查更新只跳转到 release 页面）；
+- 系统标题栏主题仍由操作系统决定。
 
 ## 许可证
 

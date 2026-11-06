@@ -16,19 +16,21 @@ shell built with Rust, [GPUI](https://github.com/zed-industries/zed) and
 
 ## What it does
 
-- **Instances** — vanilla, Fabric and Quilt today; Forge and NeoForge are
-  recognized but disabled until their installers land. Per-instance game
-  directory, memory, JVM arguments and logs.
+- **Instances** — vanilla, Fabric, Quilt, Forge and NeoForge (NeoForge 1.20.2+).
+  Per-instance game directory, memory, JVM arguments and logs.
 - **Launching** — version metadata merging, library and asset installation,
   SHA-1 verification, native extraction, Java selection, quick-play joins.
 - **Accounts** — Microsoft device-code sign-in, offline accounts and
-  LittleSkin/authlib servers. Tokens stay in the OS keychain.
+  LittleSkin/authlib servers. Tokens stay in the OS keychain; Microsoft skin
+  heads are fetched and cropped when available.
 - **Java** — detects existing runtimes and can download Eclipse Temurin when a
   version needs one.
-- **Servers** — saved servers, status ping with MOTD/players/latency, one-click
-  join.
+- **Servers** — saved servers, SRV-aware status ping with MOTD/players/latency,
+  one-click join.
 - **Modrinth** — search by type/loader/version, dependency-aware installs,
-  resource packs and shaders, and file removal.
+  resource packs, shaders, modpack import, and file removal.
+- **Backups and files** — zip backups with a safety copy on restore, instance
+  export/import, and a read-only per-instance file browser with text preview.
 - **Material 3 Expressive UI** — adaptive navigation bar/rail/drawer, tonal
   surfaces, expressive type, dark and light themes, zh-CN and en-US.
 
@@ -69,16 +71,17 @@ The layout is documented in [`docs/architecture.md`](docs/architecture.md).
 
 ## Status and known gaps
 
-This is an early rewrite. The launcher is usable for vanilla, Fabric and Quilt
-instances, Microsoft/offline/LittleSkin accounts, Modrinth mods, servers and
-settings. Known gaps:
+This is an early rewrite. The launcher is usable for vanilla, Fabric, Quilt,
+Forge and NeoForge instances, Microsoft/offline/LittleSkin accounts, Modrinth
+mods and modpacks, backups, servers and settings. Known gaps:
 
-- Forge / NeoForge installer pipelines
-- `.mrpack` modpack import
-- SRV lookup for server addresses
-- Per-instance file browser, backups and export/import
-- Skin-head rendering (accounts use monogram avatars)
+- NeoForge 1.20.1 uses the legacy Forge artifact and is not offered.
+- Forge/NeoForge modpacks return a typed unsupported error.
+- Modpack import shows an importing state, not per-file Activity progress.
+- LittleSkin/authlib skin textures are not fetched (monograms fallback).
+- Installer output is surfaced on failure, not streamed into Activity.
 - In-app updater (checking links to the release page)
+- Native title bar theming is left to the platform.
 
 ## License
 
