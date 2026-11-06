@@ -48,6 +48,7 @@ An instance is a self-contained game directory:
 - memory mode (auto/manual), JVM and game arguments
 - Java override
 - mods, resource packs, shader packs, worlds and screenshots
+- backups, instance export/import and a read-only file browser
 - playtime and last-played time
 
 Create from a vanilla version with an optional loader. Forge and NeoForge are

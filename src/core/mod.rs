@@ -4,7 +4,10 @@
 #![allow(dead_code)]
 
 pub mod accounts;
+pub mod backup;
 pub mod download;
+pub mod export;
+pub mod files;
 pub mod http;
 pub mod install;
 pub mod instances;

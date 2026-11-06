@@ -96,6 +96,19 @@ impl Paths {
         self.root.join("downloads")
     }
 
+    pub fn backups_dir(&self) -> PathBuf {
+        self.root.join("backups")
+    }
+
+    pub fn instance_backups_dir(&self, id: &str) -> Result<PathBuf> {
+        assert_safe_id(id)?;
+        Ok(self.backups_dir().join(id))
+    }
+
+    pub fn exports_dir(&self) -> PathBuf {
+        self.root.join("exports")
+    }
+
     pub fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")
     }

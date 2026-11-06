@@ -27,6 +27,10 @@ pub enum InstallPhase {
     Libraries,
     Natives,
     Assets,
+    Backup,
+    Restore,
+    Export,
+    Import,
     Done,
     Error,
 }
@@ -39,6 +43,10 @@ impl InstallPhase {
             InstallPhase::Libraries => "libraries",
             InstallPhase::Natives => "natives",
             InstallPhase::Assets => "assets",
+            InstallPhase::Backup => "backup",
+            InstallPhase::Restore => "restore",
+            InstallPhase::Export => "export",
+            InstallPhase::Import => "import",
             InstallPhase::Done => "done",
             InstallPhase::Error => "error",
         }
@@ -51,6 +59,10 @@ impl InstallPhase {
             InstallPhase::Libraries => (12.0, 32.0),
             InstallPhase::Natives => (32.0, 40.0),
             InstallPhase::Assets => (40.0, 100.0),
+            InstallPhase::Backup
+            | InstallPhase::Restore
+            | InstallPhase::Export
+            | InstallPhase::Import => (0.0, 100.0),
             InstallPhase::Done | InstallPhase::Error => (100.0, 100.0),
         }
     }

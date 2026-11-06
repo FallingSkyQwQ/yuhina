@@ -461,5 +461,117 @@ pub fn render(
                 .on_dismiss(dismiss)
                 .into_any_element(),
         ),
+        Dialog::ImportInstance => {
+            let content = div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(
+                    div().w_full().child(
+                        TextField::new("import-path", &app.import_path)
+                            .w_full()
+                            .label(i18n::tr(lang, "backups.import_path"))
+                            .placeholder(i18n::tr(lang, "backups.import_placeholder")),
+                    ),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                        .child(i18n::tr(lang, "backups.import_hint")),
+                );
+            Some(
+                MaterialDialog::new("import-instance-dialog")
+                    .headline(i18n::tr(lang, "dialog.import_instance"))
+                    .size(DialogSize::Small)
+                    .max_width(520.0)
+                    .modal(true)
+                    .content(content)
+                    .action(cancel_button(cx, lang))
+                    .action(
+                        MaterialButton::new("import-instance-confirm")
+                            .variant(ButtonVariant::Filled)
+                            .icon(material_icon("download", 18.0))
+                            .child(i18n::tr(lang, "common.import"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.import_instance(window, cx)),
+                            ),
+                    )
+                    .on_dismiss(dismiss)
+                    .into_any_element(),
+            )
+        }
+        Dialog::RestoreBackup {
+            instance_id,
+            backup_id,
+            label,
+        } => {
+            let target_instance = instance_id.clone();
+            let target_backup = backup_id.clone();
+            Some(
+                MaterialDialog::new("restore-backup-dialog")
+                    .headline(i18n::tr(lang, "dialog.restore_backup"))
+                    .supporting_text(format!(
+                        "{}\n{}",
+                        label,
+                        i18n::tr(lang, "dialog.restore_confirm")
+                    ))
+                    .size(DialogSize::Small)
+                    .max_width(480.0)
+                    .modal(true)
+                    .action(cancel_button(cx, lang))
+                    .action(
+                        MaterialButton::new("restore-backup-confirm")
+                            .variant(ButtonVariant::Filled)
+                            .icon(material_icon("settings_backup_restore", 18.0))
+                            .child(i18n::tr(lang, "backups.restore"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.restore_backup(
+                                    target_instance.clone(),
+                                    target_backup.clone(),
+                                    cx,
+                                )
+                            })),
+                    )
+                    .on_dismiss(dismiss)
+                    .into_any_element(),
+            )
+        }
+        Dialog::DeleteBackup {
+            instance_id,
+            backup_id,
+            label,
+        } => {
+            let target_instance = instance_id.clone();
+            let target_backup = backup_id.clone();
+            Some(
+                MaterialDialog::new("delete-backup-dialog")
+                    .headline(i18n::tr(lang, "dialog.delete_backup"))
+                    .supporting_text(format!(
+                        "{}\n{}",
+                        label,
+                        i18n::tr(lang, "dialog.delete_backup_confirm")
+                    ))
+                    .size(DialogSize::Small)
+                    .max_width(480.0)
+                    .modal(true)
+                    .action(cancel_button(cx, lang))
+                    .action(
+                        MaterialButton::new("delete-backup-confirm")
+                            .variant(ButtonVariant::Filled)
+                            .icon(material_icon("delete", 18.0))
+                            .child(i18n::tr(lang, "common.delete"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.delete_backup(
+                                    target_instance.clone(),
+                                    target_backup.clone(),
+                                    cx,
+                                )
+                            })),
+                    )
+                    .on_dismiss(dismiss)
+                    .into_any_element(),
+            )
+        }
     }
 }
