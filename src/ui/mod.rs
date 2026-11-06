@@ -2014,7 +2014,8 @@ impl Render for Yuhina {
         // The compact window class cannot fit the two secondary destinations
         // beside the theme, language and title. Keep them reachable in one
         // overflow menu instead of letting the bar clip them.
-        let viewport_width = f32::from(window.viewport_size().width);
+        let scale = f32::from(window.rem_size()) / BASE_PX;
+        let viewport_width = f32::from(window.viewport_size().width) / scale;
         let compact_actions = viewport_width < 600.;
 
         let content = pages::render(self, window, cx);
@@ -2104,8 +2105,7 @@ impl Render for Yuhina {
         let top_bar = TopAppBar::new("top-bar", TopAppBarVariant::Small)
             .title(title)
             .container(ColorRole::SURFACE)
-            .navigation_icon(logo())
-            .actions(actions);
+            .navigation_icon(logo());
 
         let compact = viewport_width < 600.;
         let mut primary = Some(
@@ -2117,28 +2117,53 @@ impl Render for Yuhina {
             .on_click(cx.listener(|this, _, _, cx| this.open_create_dialog(cx))),
         );
 
-        let suite = NavigationSuite::new("main-navigation", self.t("nav.landmark"))
-            .items(nav_items)
-            .selected(selected)
-            .layout_type(compact.then_some(NavigationSuiteType::None))
-            .expanded_type(NavigationSuiteType::RailExpanded)
-            .expanded_from(Some(WindowWidthClass::Expanded))
-            .on_change(cx.listener(|this, id: &SharedString, _, cx| {
-                this.set_page(Page::from_id(id.as_ref()), cx);
-            }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .child(div().flex_1().min_h_0().min_w_0().w_full().child(content)),
-            );
-        let suite = if compact {
-            suite
+        let expanded = viewport_width >= 840.;
+        let rail_width = if expanded { 220. } else { 96. };
+        let main = if compact {
+            div()
+                .w(px(viewport_width))
+                .h_full()
+                .min_w_0()
+                .child(content)
         } else {
-            suite.primary_action(primary.take().expect("the compact branch keeps the FAB"))
+            let mut rail = NavigationRail::new("main-navigation", self.t("nav.landmark"))
+                .items(nav_items)
+                .selected(selected)
+                .expanded(expanded)
+                .container(ColorRole::SURFACE)
+                .on_change(cx.listener(|this, id: &SharedString, _, cx| {
+                    this.set_page(Page::from_id(id.as_ref()), cx);
+                }));
+            if let Some(fab) = primary.take() {
+                rail = rail.fab(fab);
+            }
+            div()
+                .relative()
+                .w(px(viewport_width))
+                .h_full()
+                .min_h_0()
+                .min_w_0()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(0.))
+                        .top(px(0.))
+                        .w(px(rail_width))
+                        .h_full()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .child(rail.expanded_width(rail_width)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(rail_width))
+                        .right(px(0.))
+                        .top(px(0.))
+                        .bottom(px(0.))
+                        .min_w_0()
+                        .child(content),
+                )
         };
 
         let compact_bar = compact.then(|| {
@@ -2156,7 +2181,7 @@ impl Render for Yuhina {
                 .min_w_0()
                 .flex_shrink_0()
                 .overflow_hidden()
-                .child(div().w(px(viewport_width)).child(bar))
+                .child(div().w_full().min_w_0().child(bar))
         });
         let compact_fab = primary.map(|fab| {
             div()
@@ -2200,12 +2225,22 @@ impl Render for Yuhina {
             .child(div().w_full().min_w_0().child(top_bar))
             .child(
                 div()
+                    .absolute()
+                    .right(px(16.))
+                    .top(px(16.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .children(actions),
+            )
+            .child(
+                div()
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
-                    .w(px(viewport_width))
+                    .w_full()
                     .overflow_hidden()
-                    .child(suite),
+                    .child(main),
             )
             .children(compact_bar)
             .children(compact_fab)

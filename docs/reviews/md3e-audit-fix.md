@@ -182,3 +182,22 @@ cargo build                        # pass
   `BodySmall` (12/16) rather than the design doc's old 13/18 pair, which is not
   on the 15-role scale.
 - No dependencies were added.
+
+## Follow-up after merge (layout hardening)
+
+The first fix pass still let the `NavigationSuite` content lane widen the shell
+at large widths, which pushed the top-bar actions off-screen and shifted the
+page column. The follow-up replaces that lane with a direct `NavigationRail`
+(96/220 dp) plus an absolutely positioned content inset, so the rail's
+min-content width can never move the page. The top-bar actions are now an
+absolute overlay pinned to the viewport's top-right, which keeps them visible
+even when the bar's intrinsic width changes. `page_frame` is left-aligned with
+`max_w(1120)` and no viewport-derived pixel width; the compact FAB reserves
+160 dp of bottom content space.
+
+Verification: `cargo fmt --all --check`, `cargo clippy --all-targets`,
+`cargo test` (42 passed), `cargo build`. Captures in
+`design/reviews/merged-m3e/` at 1000x800, 800x600 and 500x700. The 1440x900
+capture on this host is clamped by the 125% display scaling/work area, so its
+right edge is a host limitation rather than an app overflow; 1000/800/500
+show the complete shell.

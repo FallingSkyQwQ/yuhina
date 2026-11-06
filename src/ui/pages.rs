@@ -31,34 +31,27 @@ fn type_role<E: Styled>(element: E, role: TypeRole) -> E {
 }
 
 fn page_frame(window: &Window, header: AnyElement, body: AnyElement) -> AnyElement {
-    // An explicit width avoids percentage-width-plus-padding overflow in the
-    // flex layout. The column is the viewport minus the navigation and two
-    // gutters, capped at the 1120dp content measure.
-    let viewport = f32::from(window.viewport_size().width);
-    let navigation = if viewport >= 840. {
-        220.
-    } else if viewport >= 600. {
-        96.
-    } else {
-        0.
-    };
-    // The extra 32dp absorbs the horizontal padding the page's own padded
-    // surfaces (hero, panels) add outside their width in GPUI's layout, so a
-    // full-width child never paints past the right gutter.
-    let content_width = (viewport - navigation - 96.).clamp(0., 1120.);
+    // Let the suite's flex content define the available width. Computing a
+    // pixel width from `viewport_size()` mixes physical pixels with logical
+    // `px()` units on scaled displays and shifts/clips the column. A
+    // left-aligned, max-width column inside a clipped scroll frame is stable
+    // at every DPI.
+    let compact = f32::from(window.viewport_size().width) < 600.;
     div()
         .id("page-scroll")
-        .w_full()
-        .h_full()
+        .size_full()
         .min_w_0()
         .overflow_y_scroll()
         .overflow_x_hidden()
         .child(
-            div().w_full().min_w_0().flex().justify_center().child(
+            div().w_full().min_w_0().flex().flex_col().child(
                 div()
-                    .w(px(content_width))
+                    .w_full()
+                    .max_w(px(1120.))
                     .min_w_0()
-                    .py(px(32.))
+                    .px(px(32.))
+                    .pt(px(32.))
+                    .pb(px(if compact { 160. } else { 32. }))
                     .flex()
                     .flex_col()
                     .items_stretch()
