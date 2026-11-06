@@ -242,11 +242,13 @@ pub fn delete(paths: &Paths, id: &str, keep_files: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn duplicate(paths: &Paths, id: &str) -> Result<InstanceRecord> {
+/// Duplicates an instance. `copy_suffix` is supplied by the UI so the stored
+/// name follows the active language instead of hard-coding English in core.
+pub fn duplicate(paths: &Paths, id: &str, copy_suffix: &str) -> Result<InstanceRecord> {
     let source = load(paths, id)?;
     let mut copy = source.clone();
     copy.id = uuid::Uuid::new_v4().to_string();
-    copy.name = format!("{} (copy)", source.name);
+    copy.name = format!("{}{}", source.name, copy_suffix);
     copy.created_at = now();
     copy.last_played_at = None;
     copy.playtime_ms = 0;

@@ -17,22 +17,51 @@ pub fn render(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -
 // Shared building blocks
 // ---------------------------------------------------------------------------
 
-fn page_frame(header: AnyElement, body: AnyElement) -> AnyElement {
+fn type_scale<E: Styled>(element: E, scale: TypeScale) -> E {
+    element
+        .font_family(scale.font_family)
+        .text_size(scale.font_size)
+        .letter_spacing(scale.letter_spacing)
+        .line_height(scale.line_height)
+        .font_weight(FontWeight(scale.font_weight as f32))
+}
+
+fn type_role<E: Styled>(element: E, role: TypeRole) -> E {
+    type_scale(element, role.scale())
+}
+
+fn page_frame(window: &Window, header: AnyElement, body: AnyElement) -> AnyElement {
+    // An explicit width avoids percentage-width-plus-padding overflow in the
+    // flex layout. The column is the viewport minus the navigation and two
+    // gutters, capped at the 1120dp content measure.
+    let viewport = f32::from(window.viewport_size().width);
+    let navigation = if viewport >= 840. {
+        220.
+    } else if viewport >= 600. {
+        96.
+    } else {
+        0.
+    };
+    // The extra 32dp absorbs the horizontal padding the page's own padded
+    // surfaces (hero, panels) add outside their width in GPUI's layout, so a
+    // full-width child never paints past the right gutter.
+    let content_width = (viewport - navigation - 96.).clamp(0., 1120.);
     div()
         .id("page-scroll")
         .w_full()
         .h_full()
         .min_w_0()
         .overflow_y_scroll()
+        .overflow_x_hidden()
         .child(
             div().w_full().min_w_0().flex().justify_center().child(
                 div()
-                    .flex_1()
+                    .w(px(content_width))
                     .min_w_0()
-                    .max_w(px(1120.))
-                    .p(px(32.))
+                    .py(px(32.))
                     .flex()
                     .flex_col()
+                    .items_stretch()
                     .gap(px(24.))
                     .child(header)
                     .child(body),
@@ -48,6 +77,7 @@ fn page_header(
     actions: Option<AnyElement>,
 ) -> AnyElement {
     div()
+        .min_w_0()
         .flex()
         .items_end()
         .justify_between()
@@ -58,22 +88,27 @@ fn page_header(
                 .flex()
                 .flex_col()
                 .gap(px(6.))
+                .flex_1()
+                .min_w_0()
                 .child(
-                    div()
-                        .text_size(px(32.))
-                        .line_height(px(40.))
-                        .font_weight(FontWeight::MEDIUM)
+                    type_scale(div().min_w_0(), TypeRole::HeadlineLarge.emphasized())
                         .child(app.t(title_key)),
                 )
                 .child(
-                    div()
-                        .text_size(px(14.))
-                        .line_height(px(20.))
+                    type_role(div().min_w_0(), TypeRole::BodyMedium)
                         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                         .child(app.t(subtitle_key)),
                 ),
         )
-        .children(actions)
+        .children(actions.map(|actions| {
+            div()
+                .min_w_0()
+                .flex()
+                .flex_wrap()
+                .justify_end()
+                .gap(px(8.))
+                .child(actions)
+        }))
         .into_any_element()
 }
 
@@ -85,33 +120,80 @@ fn panel() -> Div {
 }
 
 fn section_label(app: &Yuhina, key: &str) -> Div {
-    div()
-        .text_size(px(13.))
-        .line_height(px(18.))
-        .font_weight(FontWeight::MEDIUM)
+    type_scale(div(), TypeRole::LabelLarge.emphasized())
         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
         .child(app.t(key))
 }
 
 fn muted(text: impl Into<SharedString>) -> Div {
-    div()
-        .text_size(px(13.))
-        .line_height(px(18.))
+    type_role(div(), TypeRole::BodySmall)
         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
         .child(text.into())
 }
 
+fn body_text(text: impl Into<SharedString>) -> Div {
+    type_role(div(), TypeRole::BodyMedium).child(text.into())
+}
+
 fn chip(text: impl Into<SharedString>, tone: ColorRole, text_role: ColorRole) -> Div {
-    div()
+    type_role(div(), TypeRole::LabelMedium)
         .px(px(10.))
         .py(px(4.))
         .rounded(px(999.))
         .bg(color(tone))
         .text_color(color(text_role))
-        .text_size(px(12.))
-        .line_height(px(16.))
-        .font_weight(FontWeight::MEDIUM)
         .child(text.into())
+}
+
+fn loader_text(app: &Yuhina, loader: &instances::Loader) -> String {
+    app.loader_text(loader)
+}
+
+fn playtime_text(app: &Yuhina, millis: u64) -> String {
+    let minutes = millis / 60_000;
+    if minutes < 60 {
+        app.t("instances.playtime_minutes")
+            .replace("{m}", &minutes.to_string())
+    } else {
+        app.t("instances.playtime_hours")
+            .replace("{h}", &(minutes / 60).to_string())
+            .replace("{m}", &(minutes % 60).to_string())
+    }
+}
+
+fn error_panel(app: &Yuhina, message: &str, retry: Option<AnyElement>) -> AnyElement {
+    div()
+        .w_full()
+        .rounded(px(24.))
+        .bg(color(ColorRole::ERROR_CONTAINER))
+        .text_color(color(ColorRole::ON_ERROR_CONTAINER))
+        .p(px(20.))
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(type_role(div(), TypeRole::TitleSmall).child(app.t("common.error")))
+        .child(body_text(message.to_string()))
+        .child(muted(app.t("common.offline_hint")).text_color(color(ColorRole::ON_ERROR_CONTAINER)))
+        .children(retry)
+        .into_any_element()
+}
+
+fn loading_panel(app: &Yuhina, label_key: &str) -> AnyElement {
+    div()
+        .w_full()
+        .rounded(px(24.))
+        .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
+        .p(px(20.))
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(body_text(app.t(label_key)))
+        .child(
+            LinearProgress::new("inline-loading", app.t("common.loading"))
+                .value(None::<f32>)
+                .thickness(px(4.)),
+        )
+        .into_any_element()
 }
 
 fn empty_state(
@@ -139,15 +221,9 @@ fn empty_state(
                 .text_color(color(ColorRole::ON_SECONDARY_CONTAINER))
                 .child(material_icon(icon, 30.0)),
         )
+        .child(type_scale(div(), TypeRole::HeadlineSmall.emphasized()).child(app.t(title_key)))
         .child(
-            div()
-                .text_size(px(20.))
-                .font_weight(FontWeight::MEDIUM)
-                .child(app.t(title_key)),
-        )
-        .child(
-            div()
-                .text_size(px(14.))
+            type_role(div(), TypeRole::BodyMedium)
                 .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                 .child(app.t(body_key)),
         )
@@ -179,7 +255,7 @@ fn progress_value(fraction: f32) -> f32 {
 // Home
 // ---------------------------------------------------------------------------
 
-fn home(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
+fn home(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
     let name = app
         .accounts
         .iter()
@@ -222,15 +298,13 @@ fn home(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> Any
                                 .flex_1()
                                 .min_w_0()
                                 .child(
-                                    div()
-                                        .text_size(px(16.))
-                                        .font_weight(FontWeight::MEDIUM)
+                                    type_role(div(), TypeRole::TitleMedium)
                                         .child(record.name.clone()),
                                 )
                                 .child(muted(format!(
                                     "{} · {}",
                                     record.version_id,
-                                    record.loader_label()
+                                    loader_text(app, &record.loader)
                                 ))),
                         ),
                 )
@@ -315,16 +389,10 @@ fn home(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> Any
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .child(
-                    div()
-                        .text_size(px(15.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(item.title.clone()),
-                )
+                .child(type_role(div(), TypeRole::TitleSmall).child(item.title.clone()))
                 .child(muted(item.date.clone()))
                 .child(
-                    div()
-                        .text_size(px(13.))
+                    type_role(div(), TypeRole::BodySmall)
                         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                         .child(item.text.clone()),
                 )
@@ -333,7 +401,7 @@ fn home(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> Any
                         .variant(ButtonVariant::Text)
                         .button_size(ButtonSize::ExtraSmall)
                         .icon(material_icon("open_in_new", 16.0))
-                        .child(app.t("home.view_all"))
+                        .child(app.t("home.read_more"))
                         .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
                 )
                 .into_any_element()
@@ -341,7 +409,6 @@ fn home(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> Any
         .collect();
 
     let hero = div()
-        .w_full()
         .rounded(px(32.))
         .bg(color(ColorRole::PRIMARY_CONTAINER))
         .text_color(color(ColorRole::ON_PRIMARY_CONTAINER))
@@ -349,25 +416,9 @@ fn home(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> Any
         .flex()
         .flex_col()
         .gap(px(12.))
-        .child(
-            div()
-                .text_size(px(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .child(app.t("app.tagline")),
-        )
-        .child(
-            div()
-                .text_size(px(36.))
-                .line_height(px(44.))
-                .font_weight(FontWeight::MEDIUM)
-                .child(greeting),
-        )
-        .child(
-            div()
-                .text_size(px(16.))
-                .line_height(px(24.))
-                .child(app.t("home.subtitle")),
-        )
+        .child(type_scale(div(), TypeRole::LabelLarge.emphasized()).child(app.t("app.tagline")))
+        .child(type_scale(div(), TypeRole::DisplaySmall.emphasized()).child(greeting))
+        .child(type_role(div(), TypeRole::BodyLarge).child(app.t("home.subtitle")))
         .child(
             div()
                 .flex()
@@ -379,15 +430,14 @@ fn home(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> Any
                         .icon(material_icon("add", 20.0))
                         .child(app.t("home.create"))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.dialog = Some(Dialog::CreateInstance);
-                            cx.notify();
+                            this.open_create_dialog(cx);
                         })),
                 )
                 .when(!recent.is_empty(), |row| {
                     let id = recent[0].record.id.clone();
                     row.child(
                         MaterialButton::new("home-play-latest")
-                            .variant(ButtonVariant::Tonal)
+                            .variant(ButtonVariant::Filled)
                             .icon(material_icon("play_arrow", 20.0))
                             .child(app.t("home.play"))
                             .disabled(!recent[0].installed)
@@ -399,7 +449,6 @@ fn home(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> Any
         );
 
     let recent_section = div()
-        .w_full()
         .flex()
         .flex_col()
         .gap(px(12.))
@@ -417,43 +466,68 @@ fn home(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> Any
                         .on_click(cx.listener(|this, _, _, cx| this.set_page(Page::Instances, cx))),
                 ),
         )
-        .child(if recent_cards.is_empty() {
-            panel().child(empty_state(
-                app,
-                "grid_view",
-                "home.no_instances",
-                "home.no_instances_body",
-                Some(
-                    MaterialButton::new("home-create-empty")
-                        .variant(ButtonVariant::Filled)
-                        .icon(material_icon("add", 20.0))
-                        .child(app.t("home.create"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.dialog = Some(Dialog::CreateInstance);
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ),
-            ))
+        .child(if app.loading.instances && recent_cards.is_empty() {
+            loading_panel(app, "instances.loading")
+        } else if let Some(error) = app
+            .instance_error
+            .as_ref()
+            .filter(|_| recent_cards.is_empty())
+        {
+            let retry = MaterialButton::new("home-instances-retry")
+                .variant(ButtonVariant::Text)
+                .icon(material_icon("refresh", 18.0))
+                .child(app.t("common.retry"))
+                .on_click(cx.listener(|this, _, _, cx| this.refresh_instances(cx)))
+                .into_any_element();
+            error_panel(app, error, Some(retry))
+        } else if recent_cards.is_empty() {
+            panel()
+                .child(empty_state(
+                    app,
+                    "grid_view",
+                    "home.no_instances",
+                    "home.no_instances_body",
+                    Some(
+                        MaterialButton::new("home-create-empty")
+                            .variant(ButtonVariant::Filled)
+                            .icon(material_icon("add", 20.0))
+                            .child(app.t("home.create"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_create_dialog(cx);
+                            }))
+                            .into_any_element(),
+                    ),
+                ))
+                .into_any_element()
         } else {
-            grid().children(recent_cards)
+            grid().children(recent_cards).into_any_element()
         });
 
     let news_section = div()
-        .w_full()
         .flex()
         .flex_col()
         .gap(px(12.))
         .child(section_label(app, "home.news"))
-        .child(if news_cards.is_empty() {
+        .child(if app.loading.news && news_cards.is_empty() {
+            loading_panel(app, "home.news_loading")
+        } else if let Some(error) = app.news_error.as_ref().filter(|_| news_cards.is_empty()) {
+            let retry = MaterialButton::new("news-retry")
+                .variant(ButtonVariant::Text)
+                .icon(material_icon("refresh", 18.0))
+                .child(app.t("common.retry"))
+                .on_click(cx.listener(|this, _, _, cx| this.refresh_news(cx, true)))
+                .into_any_element();
+            error_panel(app, error, Some(retry))
+        } else if news_cards.is_empty() {
             panel()
-                .child(muted(app.t("common.loading")))
+                .child(muted(app.t("home.news_empty")))
                 .into_any_element()
         } else {
             grid().children(news_cards).into_any_element()
         });
 
     page_frame(
+        window,
         hero.into_any_element(),
         div()
             .flex()
@@ -496,10 +570,7 @@ fn instances_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina
                     .variant(ButtonVariant::Filled)
                     .icon(material_icon("add", 20.0))
                     .child(app.t("instances.new"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.dialog = Some(Dialog::CreateInstance);
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.open_create_dialog(cx))),
             )
             .into_any_element(),
     );
@@ -559,15 +630,13 @@ fn instances_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina
                         .flex_1()
                         .min_w_0()
                         .child(
-                            div()
-                                .text_size(px(17.))
-                                .font_weight(FontWeight::MEDIUM)
+                            type_role(div(), TypeRole::TitleMedium)
                                 .child(summary.record.name.clone()),
                         )
                         .child(muted(format!(
                             "{} · {} · {} MB",
                             summary.record.version_id,
-                            summary.record.loader_label(),
+                            loader_text(app, &summary.record.loader),
                             summary.record.memory_mb
                         ))),
                 )
@@ -613,34 +682,48 @@ fn instances_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina
         })
         .collect();
 
-    let body = if rows.is_empty() {
-        panel().child(empty_state(
-            app,
-            "grid_view",
-            "instances.empty",
-            "instances.empty_body",
-            Some(
-                MaterialButton::new("instances-create-empty")
-                    .variant(ButtonVariant::Filled)
-                    .icon(material_icon("add", 20.0))
-                    .child(app.t("instances.new"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.dialog = Some(Dialog::CreateInstance);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            ),
-        ))
+    let body = if app.loading.instances && rows.is_empty() {
+        loading_panel(app, "instances.loading")
+    } else if let Some(error) = app.instance_error.as_ref().filter(|_| rows.is_empty()) {
+        let retry = MaterialButton::new("instances-retry")
+            .variant(ButtonVariant::Text)
+            .icon(material_icon("refresh", 18.0))
+            .child(app.t("common.retry"))
+            .on_click(cx.listener(|this, _, _, cx| this.refresh_instances(cx)))
+            .into_any_element();
+        error_panel(app, error, Some(retry))
+    } else if rows.is_empty() {
+        panel()
+            .child(empty_state(
+                app,
+                "grid_view",
+                "instances.empty",
+                "instances.empty_body",
+                Some(
+                    MaterialButton::new("instances-create-empty")
+                        .variant(ButtonVariant::Filled)
+                        .icon(material_icon("add", 20.0))
+                        .child(app.t("instances.new"))
+                        .on_click(cx.listener(|this, _, _, cx| this.open_create_dialog(cx)))
+                        .into_any_element(),
+                ),
+            ))
+            .into_any_element()
     } else {
-        div().flex().flex_col().gap(px(10.)).children(rows)
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .children(rows)
+            .into_any_element()
     };
 
-    page_frame(header, body.into_any_element())
+    page_frame(window, header, body)
 }
 
 fn instance_detail(
     app: &mut Yuhina,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Yuhina>,
     id: String,
 ) -> AnyElement {
@@ -695,16 +778,13 @@ fn instance_detail(
                         .flex_1()
                         .min_w(px(220.))
                         .child(
-                            div()
-                                .text_size(px(30.))
-                                .line_height(px(38.))
-                                .font_weight(FontWeight::MEDIUM)
+                            type_scale(div(), TypeRole::HeadlineLarge.emphasized())
                                 .child(record.name.clone()),
                         )
                         .child(muted(format!(
                             "{} · {} · {} MB",
                             record.version_id,
-                            record.loader_label(),
+                            loader_text(app, &record.loader),
                             instances::effective_memory_mb(&app.paths, &record)
                         ))),
                 )
@@ -807,7 +887,7 @@ fn instance_detail(
         )
         .children(install.map(|task| install_banner(app, &task)));
 
-    let tabs = MaterialTabs::new("instance-tabs", "Instance sections")
+    let tabs = MaterialTabs::new("instance-tabs", app.t("instances.sections"))
         .items([
             TabItem::new("overview", app.t("instances.tab.overview")),
             TabItem::new("logs", app.t("instances.tab.logs")),
@@ -846,6 +926,7 @@ fn instance_detail(
     };
 
     page_frame(
+        window,
         header.into_any_element(),
         div()
             .flex()
@@ -867,7 +948,7 @@ fn install_banner(app: &Yuhina, task: &InstallTask) -> AnyElement {
         format!(
             "{} · {} · {:.0}%",
             app.t("instances.install_progress"),
-            task.phase,
+            app.phase_label(task.phase),
             task.percent
         )
     };
@@ -888,15 +969,10 @@ fn install_banner(app: &Yuhina, task: &InstallTask) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(8.))
-        .child(
-            div()
-                .text_size(px(14.))
-                .font_weight(FontWeight::MEDIUM)
-                .child(label),
-        )
+        .child(type_role(div(), TypeRole::TitleSmall).child(label))
         .child(
             div().child(
-                LinearProgress::new("install-progress", "Installation progress")
+                LinearProgress::new("install-progress", app.t("instances.install_progress_a11y"))
                     .value(Some(fraction))
                     .thickness(px(4.)),
             ),
@@ -907,7 +983,7 @@ fn install_banner(app: &Yuhina, task: &InstallTask) -> AnyElement {
 fn overview_tab(app: &Yuhina, record: &InstanceRecord, summary: &InstanceSummary) -> AnyElement {
     let info = [
         (app.t("common.version"), record.version_id.clone()),
-        (app.t("common.loader"), record.loader_label()),
+        (app.t("common.loader"), loader_text(app, &record.loader)),
         (
             app.t("common.memory"),
             format!("{} MB", instances::effective_memory_mb(&app.paths, record)),
@@ -926,7 +1002,10 @@ fn overview_tab(app: &Yuhina, record: &InstanceRecord, summary: &InstanceSummary
                 .clone()
                 .unwrap_or_else(|| app.t("instances.never_played").to_string()),
         ),
-        (app.t("instances.playtime"), record.playtime_label()),
+        (
+            app.t("instances.playtime"),
+            playtime_text(app, record.playtime_ms),
+        ),
     ];
     let info_rows: Vec<AnyElement> = info
         .into_iter()
@@ -937,12 +1016,7 @@ fn overview_tab(app: &Yuhina, record: &InstanceRecord, summary: &InstanceSummary
                 .gap(px(2.))
                 .min_w(px(160.))
                 .child(muted(label))
-                .child(
-                    div()
-                        .text_size(px(15.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(value),
-                )
+                .child(type_role(div(), TypeRole::TitleSmall).child(value))
                 .into_any_element()
         })
         .collect();
@@ -963,9 +1037,8 @@ fn overview_tab(app: &Yuhina, record: &InstanceRecord, summary: &InstanceSummary
     let log_lines: Vec<AnyElement> = logs
         .into_iter()
         .map(|line| {
-            div()
-                .text_size(px(12.))
-                .line_height(px(18.))
+            type_role(div(), TypeRole::BodySmall)
+                .line_height(rem(18.))
                 .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                 .child(line.text)
                 .into_any_element()
@@ -1004,8 +1077,7 @@ fn overview_tab(app: &Yuhina, record: &InstanceRecord, summary: &InstanceSummary
             if summary.required_java_major.is_some() && !summary.installed {
                 panel()
                     .child(
-                        div()
-                            .text_size(px(13.))
+                        type_role(div(), TypeRole::BodySmall)
                             .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                             .child(format!(
                                 "{}: Java {}",
@@ -1039,9 +1111,8 @@ fn logs_tab(app: &Yuhina, id: &str) -> AnyElement {
                 crate::core::launch::LogStream::System => ColorRole::PRIMARY,
                 _ => ColorRole::ON_SURFACE_VARIANT,
             };
-            div()
-                .text_size(px(12.))
-                .line_height(px(18.))
+            type_role(div(), TypeRole::BodySmall)
+                .line_height(rem(18.))
                 .text_color(color(tint))
                 .child(line.text.clone())
                 .into_any_element()
@@ -1105,12 +1176,7 @@ fn content_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
                             .flex()
                             .flex_col()
                             .min_w_0()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(name),
-                            )
+                            .child(type_role(div(), TypeRole::TitleSmall).child(name))
                             .child(muted(format!("{:.1} MB", size as f64 / 1_048_576.0))),
                     )
                     .child(
@@ -1246,12 +1312,7 @@ fn backups_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
                         .flex_col()
                         .flex_1()
                         .min_w(px(180.))
-                        .child(
-                            div()
-                                .text_size(px(15.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(label),
-                        )
+                        .child(type_role(div(), TypeRole::TitleSmall).child(label))
                         .child(muted(format!(
                             "{} · {} · {} {}",
                             backup_time(&backup.created_at),
@@ -1449,9 +1510,8 @@ fn files_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
                 .content
                 .lines()
                 .map(|line| {
-                    div()
-                        .text_size(px(12.))
-                        .line_height(px(18.))
+                    type_role(div(), TypeRole::BodySmall)
+                        .line_height(rem(18.))
                         .font_family("monospace")
                         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                         .child(line.to_string())
@@ -1591,7 +1651,7 @@ fn settings_tab(app: &Yuhina, cx: &mut Context<Yuhina>, record: &InstanceRecord)
                 .gap(px(10.))
                 .child(section_label(app, "instances.java_path"))
                 .child(
-                    div().text_size(px(13.)).child(
+                    type_role(div(), TypeRole::BodySmall).child(
                         record
                             .java_path
                             .clone()
@@ -1600,8 +1660,7 @@ fn settings_tab(app: &Yuhina, cx: &mut Context<Yuhina>, record: &InstanceRecord)
                 )
                 .child(section_label(app, "instances.jvm_args"))
                 .child(
-                    div()
-                        .text_size(px(13.))
+                    type_role(div(), TypeRole::BodySmall)
                         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                         .child(if record.jvm_args.is_empty() {
                             app.t("common.none").to_string()
@@ -1611,8 +1670,7 @@ fn settings_tab(app: &Yuhina, cx: &mut Context<Yuhina>, record: &InstanceRecord)
                 )
                 .child(section_label(app, "instances.game_args"))
                 .child(
-                    div()
-                        .text_size(px(13.))
+                    type_role(div(), TypeRole::BodySmall)
                         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                         .child(if record.game_args.is_empty() {
                             app.t("common.none").to_string()
@@ -1623,8 +1681,7 @@ fn settings_tab(app: &Yuhina, cx: &mut Context<Yuhina>, record: &InstanceRecord)
         )
         .child(
             panel().child(
-                div()
-                    .text_size(px(13.))
+                type_role(div(), TypeRole::BodySmall)
                     .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                     .child(format!(
                         "{}: {}",
@@ -1640,7 +1697,7 @@ fn settings_tab(app: &Yuhina, cx: &mut Context<Yuhina>, record: &InstanceRecord)
 // Library
 // ---------------------------------------------------------------------------
 
-fn library(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
+fn library(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
     let actions = Some(
         MaterialButton::new("library-import-modpack")
             .variant(ButtonVariant::Tonal)
@@ -1749,15 +1806,9 @@ fn library(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> 
                         .flex_col()
                         .flex_1()
                         .min_w_0()
+                        .child(type_role(div(), TypeRole::TitleMedium).child(hit.title.clone()))
                         .child(
-                            div()
-                                .text_size(px(16.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(hit.title.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(13.))
+                            type_role(div(), TypeRole::BodySmall)
                                 .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                                 .child(hit.description.clone()),
                         )
@@ -1819,13 +1870,17 @@ fn library(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> 
                 ),
         )
         .child(if app.loading.modpack {
-            panel()
-                .child(muted(app.t("library.importing")))
-                .into_any_element()
+            loading_panel(app, "library.importing")
         } else if app.loading.library {
-            panel()
-                .child(muted(app.t("library.searching")))
-                .into_any_element()
+            loading_panel(app, "library.searching")
+        } else if let Some(error) = &app.library_error {
+            let retry = MaterialButton::new("library-retry")
+                .variant(ButtonVariant::Text)
+                .icon(material_icon("refresh", 18.0))
+                .child(app.t("common.retry"))
+                .on_click(cx.listener(|this, _, _, cx| this.search_library(cx)))
+                .into_any_element();
+            error_panel(app, error, Some(retry))
         } else if result_rows.is_empty() {
             panel()
                 .child(empty_state(
@@ -1846,7 +1901,7 @@ fn library(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> 
         })
         .into_any_element();
 
-    page_frame(header, body)
+    page_frame(window, header, body)
 }
 
 fn compact_number(value: u64) -> String {
@@ -1863,7 +1918,7 @@ fn compact_number(value: u64) -> String {
 // Accounts
 // ---------------------------------------------------------------------------
 
-fn accounts_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
+fn accounts_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
     let actions = Some(
         MaterialButton::new("accounts-add")
             .variant(ButtonVariant::Filled)
@@ -1871,6 +1926,7 @@ fn accounts_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina
             .child(app.t("accounts.add"))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.dialog = Some(Dialog::AddAccount);
+                this.dialog_error = None;
                 cx.notify();
             }))
             .into_any_element(),
@@ -1897,6 +1953,7 @@ fn accounts_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina
                 Some(path) => avatar.image(path),
                 None => avatar.monogram(monogram_initials(&account.name)),
             };
+            let short_uuid: String = account.uuid.chars().take(8).collect();
             div()
                 .w_full()
                 .rounded(px(20.))
@@ -1916,13 +1973,8 @@ fn accounts_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(account.name.clone()),
-                        )
-                        .child(muted(format!("{kind} · {}", account.uuid))),
+                        .child(type_role(div(), TypeRole::TitleMedium).child(account.name.clone()))
+                        .child(muted(format!("{kind} · {short_uuid}"))),
                 )
                 .children(account.active.then(|| {
                     chip(
@@ -1936,16 +1988,15 @@ fn accounts_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina
                     div()
                         .flex()
                         .gap(px(8.))
-                        .child(
+                        .children((!account.active).then(|| {
                             MaterialButton::new(format!("account-active-{}", account.id))
                                 .variant(ButtonVariant::Text)
                                 .button_size(ButtonSize::Small)
-                                .disabled(account.active)
                                 .child(app.t("accounts.set_active"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.set_active_account(set_id.clone(), cx)
-                                })),
-                        )
+                                }))
+                        }))
                         .child(
                             IconButton::new(
                                 format!("account-remove-{}", account.id),
@@ -1961,35 +2012,53 @@ fn accounts_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina
         })
         .collect();
 
-    let body = if rows.is_empty() {
-        panel().child(empty_state(
-            app,
-            "person",
-            "accounts.empty",
-            "accounts.empty_body",
-            Some(
-                MaterialButton::new("accounts-add-empty")
-                    .variant(ButtonVariant::Filled)
-                    .icon(material_icon("person_add", 20.0))
-                    .child(app.t("accounts.add"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.dialog = Some(Dialog::AddAccount);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            ),
-        ))
+    let body = if app.loading.accounts && rows.is_empty() {
+        loading_panel(app, "accounts.loading")
+    } else if let Some(error) = app.account_error.as_ref().filter(|_| rows.is_empty()) {
+        let retry = MaterialButton::new("accounts-retry")
+            .variant(ButtonVariant::Text)
+            .icon(material_icon("refresh", 18.0))
+            .child(app.t("common.retry"))
+            .on_click(cx.listener(|this, _, _, cx| this.refresh_accounts(cx)))
+            .into_any_element();
+        error_panel(app, error, Some(retry))
+    } else if rows.is_empty() {
+        panel()
+            .child(empty_state(
+                app,
+                "person",
+                "accounts.empty",
+                "accounts.empty_body",
+                Some(
+                    MaterialButton::new("accounts-add-empty")
+                        .variant(ButtonVariant::Filled)
+                        .icon(material_icon("person_add", 20.0))
+                        .child(app.t("accounts.add"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dialog = Some(Dialog::AddAccount);
+                            this.dialog_error = None;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+            ))
+            .into_any_element()
     } else {
-        div().flex().flex_col().gap(px(10.)).children(rows)
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .children(rows)
+            .into_any_element()
     };
-    page_frame(header, body.into_any_element())
+    page_frame(window, header, body)
 }
 
 // ---------------------------------------------------------------------------
 // Servers
 // ---------------------------------------------------------------------------
 
-fn servers_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
+fn servers_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
     let actions = Some(
         div()
             .flex()
@@ -2008,6 +2077,7 @@ fn servers_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>
                     .child(app.t("servers.add"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.dialog = Some(Dialog::AddServer);
+                        this.dialog_error = None;
                         cx.notify();
                     })),
             )
@@ -2049,12 +2119,7 @@ fn servers_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>
                         .flex_col()
                         .flex_1()
                         .min_w_0()
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(server.name.clone()),
-                        )
+                        .child(type_role(div(), TypeRole::TitleMedium).child(server.name.clone()))
                         .child(muted(servers::format_address(&server.address, server.port)))
                         .child(match &status {
                             Some(status) => muted(format!(
@@ -2115,28 +2180,46 @@ fn servers_page(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>
         })
         .collect();
 
-    let body = if rows.is_empty() {
-        panel().child(empty_state(
-            app,
-            "dns",
-            "servers.empty",
-            "servers.empty_body",
-            Some(
-                MaterialButton::new("servers-add-empty")
-                    .variant(ButtonVariant::Filled)
-                    .icon(material_icon("add", 20.0))
-                    .child(app.t("servers.add"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.dialog = Some(Dialog::AddServer);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            ),
-        ))
+    let body = if app.loading.servers && rows.is_empty() {
+        loading_panel(app, "servers.loading")
+    } else if let Some(error) = app.server_error.as_ref().filter(|_| rows.is_empty()) {
+        let retry = MaterialButton::new("servers-retry")
+            .variant(ButtonVariant::Text)
+            .icon(material_icon("refresh", 18.0))
+            .child(app.t("common.retry"))
+            .on_click(cx.listener(|this, _, _, cx| this.refresh_servers(cx)))
+            .into_any_element();
+        error_panel(app, error, Some(retry))
+    } else if rows.is_empty() {
+        panel()
+            .child(empty_state(
+                app,
+                "dns",
+                "servers.empty",
+                "servers.empty_body",
+                Some(
+                    MaterialButton::new("servers-add-empty")
+                        .variant(ButtonVariant::Filled)
+                        .icon(material_icon("add", 20.0))
+                        .child(app.t("servers.add"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dialog = Some(Dialog::AddServer);
+                            this.dialog_error = None;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+            ))
+            .into_any_element()
     } else {
-        div().flex().flex_col().gap(px(10.)).children(rows)
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .children(rows)
+            .into_any_element()
     };
-    page_frame(header, body.into_any_element())
+    page_frame(window, header, body)
 }
 
 fn join_server_target(app: &mut Yuhina, server: &ServerRecord, cx: &mut Context<Yuhina>) {
@@ -2180,7 +2263,7 @@ fn join_server_target(app: &mut Yuhina, server: &ServerRecord, cx: &mut Context<
 // Activity
 // ---------------------------------------------------------------------------
 
-fn activity(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
+fn activity(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
     let header = page_header(app, "activity.title", "activity.subtitle", None);
     let running: Vec<AnyElement> = app
         .running
@@ -2201,8 +2284,7 @@ fn activity(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) ->
                 .take(8)
                 .rev()
                 .map(|line| {
-                    div()
-                        .text_size(px(12.))
+                    type_role(div(), TypeRole::BodySmall)
                         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                         .child(line.text.clone())
                         .into_any_element()
@@ -2217,12 +2299,7 @@ fn activity(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) ->
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(name),
-                        )
+                        .child(type_role(div(), TypeRole::TitleMedium).child(name))
                         .child(
                             MaterialButton::new(format!("activity-stop-{id}"))
                                 .variant(ButtonVariant::Tonal)
@@ -2243,26 +2320,46 @@ fn activity(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) ->
         .installs
         .values()
         .map(|task| {
+            let name = app
+                .instances
+                .iter()
+                .find(|item| item.record.id == task.instance_id)
+                .map(|item| item.record.name.clone())
+                .unwrap_or_else(|| task.instance_id.clone());
+            let retry_id = task.instance_id.clone();
             panel()
                 .flex()
                 .flex_col()
                 .gap(px(8.))
                 .child(
-                    div()
-                        .text_size(px(15.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(format!("{} · {:.0}%", task.phase, task.percent)),
+                    type_role(div(), TypeRole::TitleMedium)
+                        .child(format!("{name} · {}", app.phase_label(task.phase))),
                 )
+                .children(task.error.as_ref().map(|error| {
+                    type_role(div(), TypeRole::BodySmall)
+                        .text_color(color(ColorRole::ERROR))
+                        .child(error.clone())
+                }))
                 .child(
                     div().child(
                         LinearProgress::new(
                             format!("activity-progress-{}", task.instance_id),
-                            "Installation progress",
+                            app.t("instances.install_progress_a11y"),
                         )
                         .value(Some(progress_value(task.percent / 100.0)))
                         .thickness(px(4.)),
                     ),
                 )
+                .children(task.error.is_some().then(|| {
+                    MaterialButton::new(format!("activity-retry-{retry_id}"))
+                        .variant(ButtonVariant::Text)
+                        .button_size(ButtonSize::Small)
+                        .icon(material_icon("refresh", 18.0))
+                        .child(app.t("common.retry"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.start_install(retry_id.clone(), cx)
+                        }))
+                }))
                 .into_any_element()
         })
         .collect();
@@ -2278,7 +2375,15 @@ fn activity(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) ->
                 .gap(px(12.))
                 .child(section_label(app, "activity.running"))
                 .child(if running.is_empty() {
-                    muted(app.t("activity.empty")).into_any_element()
+                    panel()
+                        .child(empty_state(
+                            app,
+                            "sports_esports",
+                            "activity.running_empty",
+                            "activity.running_empty_body",
+                            None,
+                        ))
+                        .into_any_element()
                 } else {
                     div()
                         .flex()
@@ -2295,7 +2400,15 @@ fn activity(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) ->
                 .gap(px(12.))
                 .child(section_label(app, "activity.installs"))
                 .child(if installs.is_empty() {
-                    muted(app.t("activity.empty")).into_any_element()
+                    panel()
+                        .child(empty_state(
+                            app,
+                            "download",
+                            "activity.installs_empty",
+                            "activity.empty_body",
+                            None,
+                        ))
+                        .into_any_element()
                 } else {
                     div()
                         .flex()
@@ -2307,7 +2420,7 @@ fn activity(app: &mut Yuhina, _window: &mut Window, cx: &mut Context<Yuhina>) ->
         )
         .into_any_element();
 
-    page_frame(header, body)
+    page_frame(window, header, body)
 }
 
 // ---------------------------------------------------------------------------
@@ -2390,6 +2503,7 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                 if *on {
                     this.settings.reduce_motion = value;
                     let _ = core_settings::save(&this.paths, &this.settings);
+                    cx.set_reduce_motion(value == crate::core::settings::ReduceMotion::On);
                     cx.notify();
                 }
             }))
@@ -2429,16 +2543,14 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                         .flex_col()
                         .min_w_0()
                         .child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(FontWeight::MEDIUM)
+                            type_role(div(), TypeRole::TitleSmall)
                                 .child(format!("Java {}", runtime.major)),
                         )
                         .child(muted(runtime.path.clone())),
                 )
                 .children(runtime.managed.then(|| {
                     chip(
-                        "managed",
+                        app.t("settings.java_managed"),
                         ColorRole::TERTIARY_CONTAINER,
                         ColorRole::ON_TERTIARY_CONTAINER,
                     )
@@ -2564,12 +2676,7 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                         .items_center()
                         .justify_between()
                         .child(muted(app.t("settings.version")))
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(APP_VERSION),
-                        ),
+                        .child(type_role(div(), TypeRole::TitleSmall).child(APP_VERSION)),
                 )
                 .child(
                     div()
@@ -2578,8 +2685,7 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                         .gap(px(2.))
                         .child(muted(app.t("settings.data_dir")))
                         .child(
-                            div()
-                                .text_size(px(12.))
+                            type_role(div(), TypeRole::BodySmall)
                                 .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                                 .child(app.paths.root().display().to_string()),
                         ),
@@ -2596,16 +2702,11 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                             div()
                                 .flex()
                                 .flex_col()
-                                .child(
-                                    div()
-                                        .text_size(px(14.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(format!(
-                                            "{} {}",
-                                            app.t("settings.update_available"),
-                                            update.version
-                                        )),
-                                )
+                                .child(type_role(div(), TypeRole::TitleSmall).child(format!(
+                                    "{} {}",
+                                    app.t("settings.update_available"),
+                                    update.version
+                                )))
                                 .child(muted(update.tag.clone()))
                                 .into_any_element()
                         } else if app.update_checked {
@@ -2644,5 +2745,5 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
         .into_any_element();
 
     let _ = window;
-    page_frame(header, settings_body)
+    page_frame(window, header, settings_body)
 }

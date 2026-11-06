@@ -24,7 +24,7 @@ The launcher is a focused tool.
 
 - compact: bottom navigation bar
 - medium: collapsed navigation rail
-- expanded and wider: navigation drawer with labels
+- expanded and wider: expanded navigation rail with labels
 
 Destinations:
 
