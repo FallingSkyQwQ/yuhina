@@ -61,6 +61,12 @@ pub fn ensure_head(paths: &Paths, account_id: &str, skin_url: &str) -> Result<Pa
     Ok(target)
 }
 
+/// Alias for [`ensure_head`] so every account kind (Microsoft and
+/// LittleSkin/authlib) shares one cached-head path.
+pub fn ensure(paths: &Paths, account_id: &str, skin_url: &str) -> Result<PathBuf> {
+    ensure_head(paths, account_id, skin_url)
+}
+
 fn validate_skin_url(value: &str) -> Result<()> {
     let url = url::Url::parse(value).map_err(|_| {
         YuhinaError::new(ErrorCode::InvalidInput, "The account skin URL is invalid.")
@@ -138,6 +144,24 @@ mod tests {
         let c = head_path(&paths, "account-id", "https://example.com/b.png");
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn skin_urls_must_be_http_or_https() {
+        assert!(validate_skin_url("https://littleskin.cn/textures/skin/abc.png").is_ok());
+        assert!(validate_skin_url("http://example.com/skin.png").is_ok());
+        for url in [
+            "file:///C:/skin.png",
+            "javascript:alert(1)",
+            "data:image/png;base64,AAAA",
+            "textures/skin.png",
+        ] {
+            assert_eq!(
+                validate_skin_url(url).unwrap_err().code,
+                ErrorCode::InvalidInput,
+                "{url} was accepted"
+            );
+        }
     }
 
     #[test]

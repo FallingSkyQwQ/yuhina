@@ -753,6 +753,89 @@ pub fn normalize_authlib_url(input: &str) -> Result<String> {
     Ok(url.trim_end_matches('/').to_string())
 }
 
+fn compact_uuid(uuid: &str) -> Result<String> {
+    let compact = uuid.replace('-', "").to_ascii_lowercase();
+    if compact.len() != 32 || !compact.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(YuhinaError::new(
+            ErrorCode::InvalidInput,
+            "That account has an invalid Minecraft UUID.",
+        ));
+    }
+    Ok(compact)
+}
+
+/// Rejects anything that is not an absolute HTTP(S) URL with a host.
+pub fn validate_skin_texture_url(value: &str) -> Result<()> {
+    let url = url::Url::parse(value).map_err(|_| {
+        YuhinaError::new(ErrorCode::InvalidInput, "The skin texture URL is invalid.")
+    })?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(YuhinaError::new(
+            ErrorCode::InvalidInput,
+            "The skin texture URL is unsafe.",
+        ));
+    }
+    Ok(())
+}
+
+/// Decodes the base64 `textures` property of an authlib profile response and
+/// returns `textures.SKIN.url` when present.
+pub fn decode_skin_textures(value: &str) -> Result<Option<String>> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(value.trim())
+        .map_err(|error| {
+            YuhinaError::new(
+                ErrorCode::Parse,
+                format!("The skin texture payload is not valid base64: {error}"),
+            )
+        })?;
+    let value: Value = serde_json::from_slice(&decoded).map_err(|error| {
+        YuhinaError::new(
+            ErrorCode::Parse,
+            format!("The skin texture payload is not valid JSON: {error}"),
+        )
+    })?;
+    let Some(url) = value["textures"]["SKIN"]["url"].as_str() else {
+        return Ok(None);
+    };
+    validate_skin_texture_url(url)?;
+    Ok(Some(url.to_string()))
+}
+
+/// Fetches `<authlib_url>/sessionserver/session/minecraft/profile/<uuid>` and
+/// reads the active skin texture URL. A missing profile (204/404) or a profile
+/// without a SKIN texture yields `None`.
+pub fn fetch_authlib_skin_url(base: &str, uuid: &str) -> Result<Option<String>> {
+    let base = base.trim_end_matches('/');
+    let parsed = url::Url::parse(base)?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(YuhinaError::new(
+            ErrorCode::InvalidInput,
+            "The authlib server URL is unsafe.",
+        ));
+    }
+    let compact = compact_uuid(uuid)?;
+    let url = format!("{base}/sessionserver/session/minecraft/profile/{compact}");
+    let response = http::request("GET", &url, &[("Accept", "application/json")], None)?;
+    // Some authlib servers disable the public session endpoint. A skin is
+    // cosmetic, so an unavailable profile must not block a valid login.
+    if !response.is_success() {
+        return Ok(None);
+    }
+    let profile: Value = response.json()?;
+    let Some(properties) = profile["properties"].as_array() else {
+        return Ok(None);
+    };
+    let Some(textures) = properties
+        .iter()
+        .find(|property| property["name"].as_str() == Some("textures"))
+        .and_then(|property| property["value"].as_str())
+    else {
+        return Ok(None);
+    };
+    decode_skin_textures(textures)
+}
+
 pub fn add_authlib(
     paths: &Paths,
     server_url: &str,
@@ -800,6 +883,7 @@ pub fn add_authlib(
             "LittleSkin returned an unexpected login response.",
         ));
     }
+    let skin_url = fetch_authlib_skin_url(&base, &uuid)?;
 
     let _ = ensure_authlib_injector(paths);
 
@@ -836,7 +920,7 @@ pub fn add_authlib(
         token_expires_at: None,
         authlib_url: Some(base),
         server_name: Some("LittleSkin".to_string()),
-        skin_url: None,
+        skin_url,
         secrets: Some(json!({ "persisted": true })),
     };
     match index {
@@ -851,10 +935,105 @@ pub fn add_authlib(
         .expect("the account was just saved"))
 }
 
+/// Refreshes a LittleSkin session and re-reads the account's skin texture.
+pub fn refresh_authlib(paths: &Paths, account_id: &str) -> Result<AccountSummary> {
+    let mut file = load_file(paths)?;
+    let index = file
+        .accounts
+        .iter()
+        .position(|account| account.id == account_id)
+        .ok_or_else(|| YuhinaError::new(ErrorCode::NotFound, "That account no longer exists."))?;
+    let mut account = file.accounts[index].clone();
+    if account.kind != AccountKind::Littleskin {
+        return Err(YuhinaError::new(
+            ErrorCode::InvalidInput,
+            "That account is not a LittleSkin account.",
+        ));
+    }
+    let base = account.authlib_url.clone().ok_or_else(|| {
+        YuhinaError::new(
+            ErrorCode::Auth,
+            "This LittleSkin account has no server URL.",
+        )
+    })?;
+    let secrets = load_secrets(account_id)?.ok_or_else(|| {
+        YuhinaError::new(
+            ErrorCode::AuthExpired,
+            "The LittleSkin session has expired. Sign in again.",
+        )
+    })?;
+    let AccountSecrets {
+        authlib_access_token,
+        authlib_client_token,
+        ..
+    } = secrets;
+    let access_token = authlib_access_token.ok_or_else(|| {
+        YuhinaError::new(
+            ErrorCode::AuthExpired,
+            "The LittleSkin session has expired. Sign in again.",
+        )
+    })?;
+    let mut payload = json!({
+        "accessToken": access_token,
+        "requestUser": false,
+    });
+    if let Some(client_token) = authlib_client_token
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        payload["clientToken"] = json!(client_token);
+    }
+    let response = http::post_json(&format!("{base}/authserver/refresh"), &payload)?;
+    if !response.is_success() {
+        return Err(YuhinaError::new(
+            ErrorCode::AuthExpired,
+            "The LittleSkin session has expired. Sign in again.",
+        ));
+    }
+    let value: Value = response.json()?;
+    let access_token = value["accessToken"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or(access_token);
+    let client_token = value["clientToken"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or(authlib_client_token);
+    if let Some(profile) = value["selectedProfile"].as_object() {
+        if let Some(uuid) = profile["id"].as_str() {
+            let uuid = format_uuid(uuid);
+            if !uuid.is_empty() {
+                account.uuid = uuid;
+            }
+        }
+        if let Some(name) = profile["name"].as_str().filter(|name| !name.is_empty()) {
+            account.name = name.to_string();
+        }
+    }
+
+    account.skin_url = fetch_authlib_skin_url(&base, &account.uuid)?;
+    account.last_used_at = now();
+    save_secrets(
+        account_id,
+        &AccountSecrets {
+            authlib_access_token: Some(access_token),
+            authlib_client_token: client_token,
+            ..Default::default()
+        },
+    )?;
+    file.accounts[index] = account;
+    save_file(paths, &file)?;
+    Ok(summarize(&file)
+        .into_iter()
+        .find(|summary| summary.id == account_id)
+        .expect("the account was just saved"))
+}
+
 pub fn authlib_jar_path(paths: &Paths) -> PathBuf {
     paths.java_dir().join("authlib-injector.jar")
 }
-
 pub fn ensure_authlib_injector(paths: &Paths) -> Result<PathBuf> {
     let destination = authlib_jar_path(paths);
     if destination.is_file()
@@ -1016,5 +1195,76 @@ mod tests {
             format_uuid("069a79f444e94726a5befca90e38aaf5"),
             "069a79f4-44e9-4726-a5be-fca90e38aaf5"
         );
+    }
+
+    fn textures_property(json: &str) -> String {
+        base64::engine::general_purpose::STANDARD.encode(json.as_bytes())
+    }
+
+    #[test]
+    fn skin_texture_url_is_decoded() {
+        let encoded = textures_property(
+            r#"{"textures":{"SKIN":{"url":"https://littleskin.cn/textures/skin/abc.png"}}}"#,
+        );
+        assert_eq!(
+            decode_skin_textures(&encoded).unwrap().as_deref(),
+            Some("https://littleskin.cn/textures/skin/abc.png")
+        );
+    }
+
+    #[test]
+    fn textures_without_a_skin_are_not_an_error() {
+        let encoded =
+            textures_property(r#"{"textures":{"CAPE":{"url":"https://example.com/c.png"}}}"#);
+        assert_eq!(decode_skin_textures(&encoded).unwrap(), None);
+        let encoded = textures_property(r#"{"textures":{}}"#);
+        assert_eq!(decode_skin_textures(&encoded).unwrap(), None);
+    }
+
+    #[test]
+    fn malformed_textures_are_typed_errors() {
+        assert_eq!(
+            decode_skin_textures("this is not base64").unwrap_err().code,
+            ErrorCode::Parse
+        );
+        let encoded = textures_property("not json");
+        assert_eq!(
+            decode_skin_textures(&encoded).unwrap_err().code,
+            ErrorCode::Parse
+        );
+    }
+
+    #[test]
+    fn unsafe_skin_texture_urls_are_rejected() {
+        for url in [
+            "javascript:alert(1)",
+            "file:///C:/skin.png",
+            "textures/skin.png",
+            "data:image/png;base64,AAAA",
+        ] {
+            let encoded =
+                textures_property(&format!(r#"{{"textures":{{"SKIN":{{"url":"{url}"}}}}}}"#));
+            assert_eq!(
+                decode_skin_textures(&encoded).unwrap_err().code,
+                ErrorCode::InvalidInput,
+                "{url} was accepted"
+            );
+        }
+        assert!(validate_skin_texture_url("https://example.com/skin.png").is_ok());
+        assert!(validate_skin_texture_url("http://example.com/skin.png").is_ok());
+    }
+
+    #[test]
+    fn compact_uuids_require_thirty_two_hex_digits() {
+        assert_eq!(
+            compact_uuid("069a79f4-44e9-4726-a5be-fca90e38aaf5").unwrap(),
+            "069a79f444e94726a5befca90e38aaf5"
+        );
+        assert_eq!(
+            compact_uuid("069a79f444e94726a5befca90e38aaf5").unwrap(),
+            "069a79f444e94726a5befca90e38aaf5"
+        );
+        assert!(compact_uuid("../etc/passwd").is_err());
+        assert!(compact_uuid("").is_err());
     }
 }
