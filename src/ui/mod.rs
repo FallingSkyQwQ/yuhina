@@ -1636,17 +1636,23 @@ impl Yuhina {
     }
 
     pub fn start_microsoft_login(&mut self, cx: &mut Context<Self>) {
+        if self.dialog_busy {
+            return;
+        }
         self.dialog_error = None;
+        self.dialog_busy = true;
         self.dialog = Some(Dialog::MicrosoftLogin {
             user_code: String::new(),
             verification_uri: String::new(),
             waiting: true,
         });
+        cx.notify();
         spawn_task(
             cx,
             accounts::start_device_code,
             |this, result, cx| match result {
                 Ok(code) => {
+                    this.dialog_busy = false;
                     cx.open_url(&code.verification_uri);
                     this.dialog = Some(Dialog::MicrosoftLogin {
                         user_code: code.user_code.clone(),
@@ -1660,19 +1666,24 @@ impl Yuhina {
                         move || accounts::complete_microsoft_login(&paths, &code_clone, |_| {}),
                         |this, result, cx| match result {
                             Ok(_) => {
+                                this.dialog_busy = false;
                                 this.dialog = None;
                                 this.dialog_error = None;
                                 this.refresh_accounts(cx);
                                 this.show_toast(this.t("toast.account_added"), false, cx);
                             }
                             Err(error) => {
+                                this.dialog_busy = false;
                                 this.dialog_error = Some(this.error_text(&error));
                                 this.show_error(error, cx);
                             }
                         },
                     );
                 }
-                Err(error) => this.show_error(error, cx),
+                Err(error) => {
+                    this.dialog_busy = false;
+                    this.show_error(error, cx);
+                }
             },
         );
     }
