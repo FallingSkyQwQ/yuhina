@@ -101,10 +101,11 @@ extracted into the root version's `natives/` directory and added through
 `-Djava.library.path`.
 
 `.mrpack` import reads `modrinth.index.json`, installs the declared loader
-(Fabric and Quilt through the profile pipeline), downloads the pack files with
-SHA checks, and extracts `overrides/` then `client-overrides/` into the new
-instance's game directory. Forge and NeoForge packs currently return a typed
-unsupported error until this path is wired to the installer pipeline.
+(Fabric and Quilt through the profile pipeline; Forge and NeoForge through
+their official installers after the vanilla parent), downloads the pack files
+with SHA checks, and extracts `overrides/` then `client-overrides/` into the
+new instance's game directory. The loader-produced version id becomes
+`launchVersionId`.
 
 Server status pings resolve `_minecraft._tcp.<host>` through the system
 resolver, connect to the SRV target, and keep the original hostname in the
@@ -115,11 +116,12 @@ record.
 
 - NeoForge 1.20.1 uses the legacy `net/neoforged/forge` artifact and is not
   offered; NeoForge 1.20.2+ is supported.
-- Forge and NeoForge modpacks return a typed unsupported error.
 - Modpack imports show an importing state and a completion toast rather than
   per-file Activity progress.
-- Skin heads are fetched for Microsoft accounts only; LittleSkin/authlib
-  textures fall back to monograms.
-- Installer output is surfaced on failure, not streamed into the Activity log.
+- LittleSkin skin textures are read from the authlib session profile when that
+  endpoint is available; a server that disables it still falls back to
+  monograms.
+- Forge and NeoForge installer output is streamed to a core callback, but the
+  Activity log does not render it yet.
 - In-app updater (the app links to the release page).
 - Native title bar theming is left to the platform.
