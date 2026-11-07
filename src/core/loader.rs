@@ -7,10 +7,11 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use super::download::{self, DownloadTask};
 use super::instances::{self, LoaderType};
@@ -399,7 +400,59 @@ fn tail(text: &str, limit: usize) -> String {
         .to_string()
 }
 
-fn run_installer(java: &Path, installer: &Path, minecraft_dir: &Path) -> Result<()> {
+const MAX_OUTPUT_LINE: usize = 512;
+const MAX_CAPTURED_OUTPUT: usize = 16 * 1024;
+
+/// Streams one installer pipe line by line and keeps a tail for error text.
+fn stream_output<R, G>(reader: R, on_output: &G, captured: &Mutex<String>)
+where
+    R: Read,
+    G: Fn(&str) + Send + Sync,
+{
+    let mut reader = BufReader::new(reader);
+    let mut buffer = String::new();
+    loop {
+        buffer.clear();
+        match reader.read_line(&mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {
+                let line = buffer.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let line = truncate_line(line, MAX_OUTPUT_LINE);
+                on_output(&line);
+                let mut captured = captured.lock().unwrap();
+                if captured.len() < MAX_CAPTURED_OUTPUT {
+                    if !captured.is_empty() {
+                        captured.push('\n');
+                    }
+                    captured.push_str(&line);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn truncate_line(line: &str, limit: usize) -> String {
+    if line.chars().count() <= limit {
+        return line.to_string();
+    }
+    let mut value: String = line.chars().take(limit).collect();
+    value.push('…');
+    value
+}
+
+fn run_installer<G>(
+    java: &Path,
+    installer: &Path,
+    minecraft_dir: &Path,
+    on_output: &G,
+) -> Result<()>
+where
+    G: Fn(&str) + Send + Sync,
+{
     let mut command = Command::new(java);
     command
         .args(installer_arguments(installer))
@@ -412,29 +465,43 @@ fn run_installer(java: &Path, installer: &Path, minecraft_dir: &Path) -> Result<
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    let output = command.output().map_err(|error| {
+    let mut child = command.spawn().map_err(|error| {
         YuhinaError::new(
             ErrorCode::InstallFailed,
             format!("The installer could not be started: {error}"),
         )
     })?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let captured = Arc::new(Mutex::new(String::new()));
 
-    if !output.status.success() {
-        let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.trim().is_empty() {
-            if !text.trim().is_empty() {
-                text.push('\n');
-            }
-            text.push_str(&stderr);
+    let status = std::thread::scope(|scope| {
+        if let Some(stdout) = stdout {
+            let captured = Arc::clone(&captured);
+            scope.spawn(move || stream_output(stdout, on_output, &captured));
         }
+        if let Some(stderr) = stderr {
+            let captured = Arc::clone(&captured);
+            scope.spawn(move || stream_output(stderr, on_output, &captured));
+        }
+        child.wait()
+    })
+    .map_err(|error| {
+        YuhinaError::new(
+            ErrorCode::InstallFailed,
+            format!("The installer could not be waited on: {error}"),
+        )
+    })?;
+
+    if !status.success() {
+        let text = captured.lock().unwrap().clone();
         let details = tail(&text, 1500);
         return Err(YuhinaError::new(
             ErrorCode::InstallFailed,
             if details.is_empty() {
-                format!("The installer exited with {}.", output.status)
+                format!("The installer exited with {status}.")
             } else {
-                format!("The installer exited with {}. {}", output.status, details)
+                format!("The installer exited with {status}. {details}")
             },
         ));
     }
@@ -444,7 +511,9 @@ fn run_installer(java: &Path, installer: &Path, minecraft_dir: &Path) -> Result<
 /// Downloads and runs an installer, then returns the produced version id.
 ///
 /// `on_progress` receives values in the range 0.0–1.0 plus a short status line
-/// that the UI can display while the installer runs.
+/// that the UI can display while the installer runs. Installer output is
+/// captured for the failure message but not streamed; use
+/// [`install_with_output`] to receive it line by line.
 pub fn install<F>(
     paths: &Paths,
     java_settings: &JavaSettings,
@@ -456,6 +525,35 @@ pub fn install<F>(
 ) -> Result<String>
 where
     F: Fn(f32, &str) + Send + Sync,
+{
+    install_with_output(
+        paths,
+        java_settings,
+        minecraft_version,
+        loader,
+        loader_version,
+        cancel,
+        on_progress,
+        |_: &str| {},
+    )
+}
+
+/// Downloads and runs an installer, forwarding its stdout and stderr to
+/// `on_output` as each line arrives.
+#[allow(clippy::too_many_arguments)]
+pub fn install_with_output<F, G>(
+    paths: &Paths,
+    java_settings: &JavaSettings,
+    minecraft_version: &str,
+    loader: LoaderType,
+    loader_version: &str,
+    cancel: Arc<AtomicBool>,
+    on_progress: F,
+    on_output: G,
+) -> Result<String>
+where
+    F: Fn(f32, &str) + Send + Sync,
+    G: Fn(&str) + Send + Sync,
 {
     if !matches!(loader, LoaderType::Forge | LoaderType::Neoforge) {
         return Err(YuhinaError::new(
@@ -512,6 +610,7 @@ where
         Path::new(&runtime.path),
         &installer_path,
         &paths.minecraft_dir(),
+        &on_output,
     )?;
 
     on_progress(0.94, "Checking the installed loader");
@@ -626,6 +725,31 @@ mod tests {
                 "1.21.1-forge-21.1.209"
             ]
         );
+    }
+
+    #[test]
+    fn installer_output_is_streamed_and_captured() {
+        let captured = Mutex::new(String::new());
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        stream_output(
+            &b"first line\r\nsecond line\n\nthird line\n"[..],
+            &|line: &str| sink.lock().unwrap().push(line.to_string()),
+            &captured,
+        );
+        assert_eq!(
+            *lines.lock().unwrap(),
+            vec!["first line", "second line", "third line"]
+        );
+        assert_eq!(
+            captured.lock().unwrap().as_str(),
+            "first line\nsecond line\nthird line"
+        );
+
+        let long = "x".repeat(MAX_OUTPUT_LINE + 10);
+        let truncated = truncate_line(&long, MAX_OUTPUT_LINE);
+        assert_eq!(truncated.chars().count(), MAX_OUTPUT_LINE + 1);
+        assert!(truncated.ends_with('…'));
     }
 
     #[test]

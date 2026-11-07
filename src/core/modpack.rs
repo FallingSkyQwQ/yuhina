@@ -19,7 +19,7 @@ use super::install::{self, InstallPhase, InstallProgress};
 use super::instances::{self, InstanceRecord, Loader, LoaderType, MemoryMode, NewInstance};
 use super::modrinth;
 use super::paths::{Paths, assert_safe_id, normalize_relative};
-use super::settings::DownloadSource;
+use super::settings::{DownloadSource, JavaSettings};
 use super::{ErrorCode, Result, YuhinaError};
 
 pub const INDEX_NAME: &str = "modrinth.index.json";
@@ -204,14 +204,14 @@ pub fn select_loader(dependencies: &HashMap<String, String>) -> Result<LoaderSel
     }
 
     let (kind, version) = selected.unwrap_or((LoaderType::Vanilla, None));
-    if matches!(kind, LoaderType::Forge | LoaderType::Neoforge) {
-        return Err(YuhinaError::new(
-            ErrorCode::Unsupported,
-            format!(
-                "{} modpacks are not supported yet. Fabric and Quilt packs can be imported.",
-                kind.label()
-            ),
-        ));
+    // Installer-driven loaders use the declared version as part of a Maven
+    // artefact name and as a version-directory id, so validate it before the
+    // vanilla install starts. A missing version is resolved by the installer
+    // pipeline from the loader's promotion list.
+    if matches!(kind, LoaderType::Forge | LoaderType::Neoforge)
+        && let Some(version) = version.as_deref()
+    {
+        assert_safe_id(version)?;
     }
 
     Ok(LoaderSelection {
@@ -329,10 +329,36 @@ fn extract_prefix(
 }
 
 /// Installs a local `.mrpack` into a brand new instance.
+///
+/// Uses the default Java settings for installer-driven loaders. Call
+/// [`import_local_with_java`] to pass the user's Java configuration.
 pub fn import_local<F>(
     paths: &Paths,
     zip_path: &Path,
     source: DownloadSource,
+    cancel: Arc<AtomicBool>,
+    on_progress: F,
+) -> Result<InstanceRecord>
+where
+    F: Fn(InstallProgress) + Send + Sync,
+{
+    import_local_with_java(
+        paths,
+        zip_path,
+        source,
+        &JavaSettings::default(),
+        cancel,
+        on_progress,
+    )
+}
+
+/// Installs a local `.mrpack` into a brand new instance, using `java_settings`
+/// when the pack needs a Forge or NeoForge installer.
+pub fn import_local_with_java<F>(
+    paths: &Paths,
+    zip_path: &Path,
+    source: DownloadSource,
+    java_settings: &JavaSettings,
     cancel: Arc<AtomicBool>,
     on_progress: F,
 ) -> Result<InstanceRecord>
@@ -368,6 +394,7 @@ where
         &files,
         zip_path,
         source,
+        java_settings,
         cancel,
         &on_progress,
     );
@@ -389,13 +416,15 @@ fn import_into<F>(
     files: &[PlannedFile],
     zip_path: &Path,
     source: DownloadSource,
+    java_settings: &JavaSettings,
     cancel: Arc<AtomicBool>,
     on_progress: &F,
 ) -> Result<()>
 where
     F: Fn(InstallProgress) + Send + Sync,
 {
-    // 1. Vanilla files and the loader profile.
+    // 1. Vanilla files, then the loader. Forge and NeoForge need the vanilla
+    //    parent to exist before their installer runs.
     install::install(
         paths,
         &selection.minecraft,
@@ -407,23 +436,23 @@ where
 
     let launch_version = match selection.loader.kind {
         LoaderType::Vanilla => selection.minecraft.clone(),
-        kind => {
-            let loader_id = install::install_loader_profile(
-                paths,
-                &selection.minecraft,
-                kind,
-                selection.loader.version.as_deref(),
-            )?;
-            install::install(
-                paths,
-                &loader_id,
+        _ => install::install_loader_with_output(
+            paths,
+            install::LoaderInstallRequest {
+                minecraft_version: &selection.minecraft,
+                loader: selection.loader.kind,
+                loader_version: selection.loader.version.as_deref(),
+                java_settings,
                 source,
-                false,
-                Arc::clone(&cancel),
-                |progress| on_progress(scale_progress(progress, 32.0, 45.0)),
-            )?;
-            loader_id
-        }
+            },
+            Arc::clone(&cancel),
+            |progress| on_progress(scale_progress(progress, 32.0, 45.0)),
+            |line| {
+                let mut value = InstallProgress::new(InstallPhase::Loader, 45.0);
+                value.message = Some(line.to_string());
+                on_progress(value);
+            },
+        )?,
     };
     instances::update(paths, &record.id, |record| {
         record.launch_version_id = Some(launch_version.clone());
@@ -474,11 +503,39 @@ fn scale_progress(mut progress: InstallProgress, start: f32, end: f32) -> Instal
 }
 
 /// Downloads a Modrinth modpack version and imports it as a new instance.
+///
+/// Uses the default Java settings for installer-driven loaders. Call
+/// [`install_modrinth_with_java`] to pass the user's Java configuration.
 pub fn install_modrinth<F>(
     paths: &Paths,
     project_id: &str,
     version_id: Option<&str>,
     source: DownloadSource,
+    cancel: Arc<AtomicBool>,
+    on_progress: F,
+) -> Result<InstanceRecord>
+where
+    F: Fn(InstallProgress) + Send + Sync,
+{
+    install_modrinth_with_java(
+        paths,
+        project_id,
+        version_id,
+        source,
+        &JavaSettings::default(),
+        cancel,
+        on_progress,
+    )
+}
+
+/// Downloads a Modrinth modpack version and imports it as a new instance,
+/// using `java_settings` when the pack needs a Forge or NeoForge installer.
+pub fn install_modrinth_with_java<F>(
+    paths: &Paths,
+    project_id: &str,
+    version_id: Option<&str>,
+    source: DownloadSource,
+    java_settings: &JavaSettings,
     cancel: Arc<AtomicBool>,
     on_progress: F,
 ) -> Result<InstanceRecord>
@@ -518,7 +575,14 @@ where
     download_all(vec![task], 1, Arc::clone(&cancel), |progress| {
         on_progress(scale_progress(progress_to_install(progress), 0.0, 3.0))
     })?;
-    import_local(paths, &destination, source, cancel, on_progress)
+    import_local_with_java(
+        paths,
+        &destination,
+        source,
+        java_settings,
+        cancel,
+        on_progress,
+    )
 }
 
 fn progress_to_install(progress: DownloadProgress) -> InstallProgress {
@@ -598,27 +662,65 @@ mod tests {
 
         let vanilla = select_loader(&deps).unwrap();
         assert_eq!(vanilla.loader.kind, LoaderType::Vanilla);
+        assert_eq!(vanilla.loader.version, None);
 
         deps.insert("quilt-loader".to_string(), "0.24.0".to_string());
         let quilt = select_loader(&deps).unwrap();
         assert_eq!(quilt.loader.kind, LoaderType::Quilt);
+        assert_eq!(quilt.loader.version.as_deref(), Some("0.24.0"));
 
         deps.remove("quilt-loader");
         deps.insert("forge".to_string(), "47.2.0".to_string());
-        assert_eq!(
-            select_loader(&deps).unwrap_err().code,
-            ErrorCode::Unsupported
-        );
+        let forge = select_loader(&deps).unwrap();
+        assert_eq!(forge.loader.kind, LoaderType::Forge);
+        assert_eq!(forge.loader.version.as_deref(), Some("47.2.0"));
 
         deps.remove("forge");
-        deps.insert("neoforge".to_string(), "21.1.0".to_string());
-        assert_eq!(
-            select_loader(&deps).unwrap_err().code,
-            ErrorCode::Unsupported
-        );
+        deps.insert("neoforge".to_string(), "21.1.209".to_string());
+        let neoforge = select_loader(&deps).unwrap();
+        assert_eq!(neoforge.loader.kind, LoaderType::Neoforge);
+        assert_eq!(neoforge.loader.version.as_deref(), Some("21.1.209"));
 
         deps.remove("neoforge");
         deps.remove("minecraft");
+        assert_eq!(
+            select_loader(&deps).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn forge_and_neoforge_versions_are_validated_before_install() {
+        let mut deps = HashMap::new();
+        deps.insert("minecraft".to_string(), "1.20.1".to_string());
+        deps.insert("forge".to_string(), "../../evil".to_string());
+        assert_eq!(
+            select_loader(&deps).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+
+        deps.remove("forge");
+        deps.insert("neoforge".to_string(), "21/1/209".to_string());
+        assert_eq!(
+            select_loader(&deps).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+
+        // An installer-driven loader may omit its version; the installer
+        // pipeline then resolves the newest compatible build.
+        deps.remove("neoforge");
+        deps.insert("forge".to_string(), String::new());
+        let forge = select_loader(&deps).unwrap();
+        assert_eq!(forge.loader.kind, LoaderType::Forge);
+        assert_eq!(forge.loader.version, None);
+    }
+
+    #[test]
+    fn declaring_two_loaders_is_rejected() {
+        let mut deps = HashMap::new();
+        deps.insert("minecraft".to_string(), "1.21.1".to_string());
+        deps.insert("forge".to_string(), "52.0.0".to_string());
+        deps.insert("neoforge".to_string(), "21.1.209".to_string());
         assert_eq!(
             select_loader(&deps).unwrap_err().code,
             ErrorCode::InvalidInput
@@ -726,5 +828,56 @@ mod tests {
         );
         let index = parse_index(json.as_bytes()).unwrap();
         assert_eq!(index.loader().unwrap_err().code, ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn failed_import_removes_the_half_installed_instance() {
+        let root =
+            std::env::temp_dir().join(format!("yuhina-modpack-cleanup-{}", uuid::Uuid::new_v4()));
+        let paths = Paths::at(root.clone());
+
+        // A local version profile with no downloads keeps the vanilla install
+        // network-free; the import then fails while extracting overrides.
+        let version_id = "1.0.0-local";
+        let dir = paths.version_dir(version_id).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(format!("{version_id}.json")),
+            format!(r#"{{"id":"{version_id}","type":"release"}}"#),
+        )
+        .unwrap();
+
+        let index = format!(
+            r#"{{
+                "formatVersion": 1,
+                "game": "minecraft",
+                "versionId": "1.0.0",
+                "name": "Broken pack",
+                "files": [],
+                "dependencies": {{ "minecraft": "{version_id}" }}
+            }}"#
+        );
+        let zip_path = root.join("broken.mrpack");
+        {
+            let file = File::create(&zip_path).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            write_zip_entry(&mut writer, options, INDEX_NAME, index.as_bytes());
+            write_zip_entry(&mut writer, options, "overrides/../evil.txt", b"nope");
+            writer.finish().unwrap();
+        }
+
+        let error = import_local(
+            &paths,
+            &zip_path,
+            DownloadSource::Auto,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InstallFailed);
+        assert!(instances::list(&paths).unwrap().is_empty());
+
+        let _ = fs::remove_dir_all(root);
     }
 }

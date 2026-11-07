@@ -454,21 +454,51 @@ pub fn install_loader<F>(
 where
     F: Fn(InstallProgress) + Send + Sync,
 {
+    install_loader_with_output(paths, request, cancel, on_progress, |_| {})
+}
+
+/// Like [`install_loader`], but also forwards the Forge/NeoForge installer's
+/// stdout and stderr line by line to `on_output`. Fabric and Quilt never emit
+/// installer output.
+pub fn install_loader_with_output<F, G>(
+    paths: &Paths,
+    request: LoaderInstallRequest<'_>,
+    cancel: Arc<AtomicBool>,
+    on_progress: F,
+    on_output: G,
+) -> Result<String>
+where
+    F: Fn(InstallProgress) + Send + Sync,
+    G: Fn(&str) + Send + Sync,
+{
     use super::instances::LoaderType;
 
     if matches!(request.loader, LoaderType::Forge | LoaderType::Neoforge) {
-        let version = request.loader_version.ok_or_else(|| {
-            YuhinaError::new(
-                ErrorCode::InvalidInput,
-                format!("Choose a {} version first.", request.loader.label()),
-            )
-        })?;
-        return super::loader::install(
+        // Packs may declare the loader key with an empty version. Resolve the
+        // newest compatible build from the loader's promotion list.
+        let version = match request.loader_version.map(str::trim) {
+            Some(version) if !version.is_empty() => version.to_string(),
+            _ => super::loader::discover(request.minecraft_version, request.loader)?
+                .into_iter()
+                .next()
+                .map(|entry| entry.version)
+                .ok_or_else(|| {
+                    YuhinaError::new(
+                        ErrorCode::NotFound,
+                        format!(
+                            "No {} build is available for {}.",
+                            request.loader.label(),
+                            request.minecraft_version
+                        ),
+                    )
+                })?,
+        };
+        return super::loader::install_with_output(
             paths,
             request.java_settings,
             request.minecraft_version,
             request.loader,
-            version,
+            &version,
             cancel,
             |progress, message| {
                 let mut value = InstallProgress::new(
@@ -478,6 +508,7 @@ where
                 value.message = Some(message.to_string());
                 on_progress(value);
             },
+            on_output,
         );
     }
 
