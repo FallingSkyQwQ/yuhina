@@ -1,3 +1,4 @@
+use super::pages::{error_panel, loading_panel, muted};
 use super::*;
 use crate::core::instances::LoaderType;
 
@@ -15,19 +16,48 @@ fn type_role<E: Styled>(element: E, role: TypeRole) -> E {
 }
 
 fn dialog_content(content: Div) -> Div {
-    content.px(px(24.)).pb(px(8.))
+    content.px(rem(24.)).pb(rem(16.))
 }
 
-fn inline_error(app: &Yuhina) -> Option<AnyElement> {
+fn compact(window: &Window) -> bool {
+    WindowWidthClass::of(f32::from(window.viewport_size().width)) == WindowWidthClass::Compact
+}
+
+fn dialog_size(window: &Window) -> DialogSize {
+    dialog_size_for(WindowWidthClass::of(f32::from(
+        window.viewport_size().width,
+    )))
+}
+
+fn dialog_size_for(class: WindowWidthClass) -> DialogSize {
+    if class == WindowWidthClass::Compact {
+        DialogSize::FullScreen
+    } else {
+        DialogSize::Medium
+    }
+}
+
+fn finish_dialog(dialog: MaterialDialog, window: &Window, lang: Language) -> MaterialDialog {
+    if compact(window) {
+        dialog.close_button(i18n::tr(lang, "common.close"))
+    } else {
+        dialog
+    }
+}
+
+fn dialog_error(app: &Yuhina) -> Option<AnyElement> {
     app.dialog_error.as_ref().map(|error| {
-        type_role(div(), TypeRole::BodySmall)
-            .text_color(color(ColorRole::ERROR))
-            .child(error.clone())
-            .into_any_element()
+        notice_banner("dialog-error", NoticeKind::Danger, error.clone()).into_any_element()
     })
 }
 
-/// The version chips put curated modded versions first, then the selected
+fn field_error<'a>(app: &'a Yuhina, field: &str) -> Option<&'a String> {
+    (app.dialog_field_error == Some(field))
+        .then_some(app.dialog_error.as_ref())
+        .flatten()
+}
+
+/// The version list puts curated modded versions first, then the selected
 /// version, then the newest releases. Taking only the eight newest releases
 /// hid 1.20.1 and 1.21.1, which most modpacks still target.
 fn version_options(app: &Yuhina) -> Vec<String> {
@@ -54,7 +84,7 @@ fn version_options(app: &Yuhina) -> Vec<String> {
         out.push(app.create_version.clone());
     }
     for version in releases {
-        if out.len() >= 12 {
+        if out.len() >= 24 {
             break;
         }
         if !out.iter().any(|candidate| candidate == &version) {
@@ -71,10 +101,23 @@ fn destructive_button(id: &str, label: &'static str) -> MaterialButton {
         .child(label)
 }
 
+fn cancel_button(cx: &mut Context<Yuhina>, lang: Language, busy: bool) -> MaterialButton {
+    MaterialButton::new("dialog-cancel")
+        .variant(ButtonVariant::Text)
+        .disabled(busy)
+        .child(i18n::tr(lang, "common.cancel"))
+        .on_click(cx.listener(|this, _, _, cx| {
+            if !this.dialog_busy {
+                this.dialog = None;
+                cx.notify();
+            }
+        }))
+}
+
 /// Renders the currently open dialog as a modal overlay.
 pub fn render(
     app: &mut Yuhina,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Yuhina>,
 ) -> Option<AnyElement> {
     let dialog = app.dialog.clone()?;
@@ -82,321 +125,293 @@ pub fn render(
     let weak = cx.entity().downgrade();
     let dismiss = move |_: &mut Window, cx: &mut App| {
         let _ = weak.update(cx, |this: &mut Yuhina, cx: &mut Context<Yuhina>| {
-            this.dialog = None;
-            cx.notify();
-        });
-    };
-    let close_listener = cx.listener(|this, _: &ClickEvent, _, cx| {
-        this.dialog = None;
-        cx.notify();
-    });
-    let _ = close_listener;
-    let cancel_button = |cx: &mut Context<Yuhina>, lang: Language| {
-        MaterialButton::new("dialog-cancel")
-            .variant(ButtonVariant::Text)
-            .child(i18n::tr(lang, "common.cancel"))
-            .on_click(cx.listener(|this, _, _, cx| {
+            if !this.dialog_busy {
                 this.dialog = None;
                 cx.notify();
-            }))
+            }
+        });
     };
+    let size = dialog_size(window);
+    let busy = app.dialog_busy;
 
     match dialog {
         Dialog::CreateInstance => {
             let versions = version_options(app);
-            let version_chips: Vec<AnyElement> = versions
-                .into_iter()
-                .map(|version| {
-                    let value = version.clone();
-                    FilterChip::new(format!("create-version-{version}"), version)
-                        .selected(app.create_version == value)
-                        .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
-                            if *on {
-                                this.choose_create_version(value.clone(), cx);
-                            }
-                        }))
-                        .into_any_element()
-                })
-                .collect();
+            let selected_version = versions
+                .iter()
+                .position(|version| version == &app.create_version);
+            let version_dropdown = ExposedDropdown::new("create-version", app.t("common.version"))
+                .options(versions.clone())
+                .selected(selected_version)
+                .full_width()
+                .menu_max_height(320.)
+                .on_select(cx.listener(move |this, index: &usize, _, cx| {
+                    if let Some(version) = versions.get(*index) {
+                        this.choose_create_version(version.clone(), cx);
+                    }
+                }));
+
             let loaders = [
-                LoaderType::Vanilla,
-                LoaderType::Fabric,
-                LoaderType::Quilt,
-                LoaderType::Forge,
-                LoaderType::Neoforge,
+                (LoaderType::Vanilla, "vanilla"),
+                (LoaderType::Fabric, "fabric"),
+                (LoaderType::Quilt, "quilt"),
+                (LoaderType::Forge, "forge"),
+                (LoaderType::Neoforge, "neoforge"),
             ];
-            let loader_chips: Vec<AnyElement> = loaders
-                .into_iter()
-                .map(|loader| {
-                    let label = app.loader_label(loader);
-                    FilterChip::new(format!("create-loader-{label}"), label)
-                        .selected(app.create_loader == loader)
-                        .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
-                            if *on {
-                                this.choose_create_loader(loader, cx);
-                            }
-                        }))
-                        .into_any_element()
-                })
+            let loader_selected = loaders
+                .iter()
+                .find(|(loader, _)| *loader == app.create_loader)
+                .map(|(_, value)| *value)
+                .unwrap_or("vanilla");
+            let loader_options: Vec<(&str, &str)> = loaders
+                .iter()
+                .map(|(loader, value)| (*value, app.loader_label(*loader)))
                 .collect();
-            let loader_version_section =
+            let loader_group = ConnectedButtonGroup::new("create-loader", app.t("common.loader"))
+                .options(loader_options)
+                .selected(loader_selected)
+                .selection(GroupSelection::Single)
+                .segmented()
+                .on_change(cx.listener(|this, value: &SharedString, _, cx| {
+                    let loader = match value.as_ref() {
+                        "fabric" => LoaderType::Fabric,
+                        "quilt" => LoaderType::Quilt,
+                        "forge" => LoaderType::Forge,
+                        "neoforge" => LoaderType::Neoforge,
+                        _ => LoaderType::Vanilla,
+                    };
+                    this.choose_create_loader(loader, cx);
+                }));
+
+            let loader_version_section: Option<AnyElement> =
                 if matches!(app.create_loader, LoaderType::Forge | LoaderType::Neoforge) {
                     let body: AnyElement = if app.loader_versions_loading {
-                        type_role(div(), TypeRole::BodySmall)
-                            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                            .child(i18n::tr(lang, "instances.loader_versions_loading"))
-                            .into_any_element()
+                        loading_panel(
+                            app,
+                            "create-loader-loading",
+                            "instances.loader_versions_loading",
+                        )
                     } else if let Some(error) = &app.loader_versions_error {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.))
-                            .child(
-                                type_role(div(), TypeRole::BodySmall)
-                                    .text_color(color(ColorRole::ERROR))
-                                    .child(error.clone()),
+                        let retry = MaterialButton::new("create-loader-retry")
+                            .variant(ButtonVariant::Text)
+                            .child(app.t("common.retry"))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.refresh_loader_versions(cx)),
                             )
-                            .child(
-                                MaterialButton::new("create-loader-retry")
-                                    .variant(ButtonVariant::Text)
-                                    .child(i18n::tr(lang, "common.retry"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.refresh_loader_versions(cx)
-                                    })),
-                            )
-                            .into_any_element()
+                            .into_any_element();
+                        error_panel(app, "create-loader-error", error, Some(retry))
                     } else if app.loader_versions.is_empty() {
-                        type_role(div(), TypeRole::BodySmall)
-                            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                            .child(i18n::tr(lang, "instances.loader_versions_empty"))
-                            .into_any_element()
+                        muted(app.t("instances.loader_versions_empty")).into_any_element()
                     } else {
-                        let chips: Vec<AnyElement> = app
+                        let labels: Vec<String> = app
                             .loader_versions
                             .iter()
                             .map(|option| {
-                                let value = option.version.clone();
-                                let label = if option.recommended {
+                                if option.recommended {
                                     format!(
                                         "{} · {}",
                                         option.version,
-                                        i18n::tr(lang, "instances.loader_recommended")
+                                        app.t("instances.loader_recommended")
                                     )
                                 } else {
                                     option.version.clone()
-                                };
-                                FilterChip::new(format!("create-loader-version-{value}"), label)
-                                    .selected(
-                                        app.create_loader_version.as_deref()
-                                            == Some(value.as_str()),
-                                    )
-                                    .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
-                                        if *on {
-                                            this.create_loader_version = Some(value.clone());
-                                            cx.notify();
-                                        }
-                                    }))
-                                    .into_any_element()
+                                }
                             })
                             .collect();
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(8.))
-                            .children(chips)
-                            .into_any_element()
+                        let selected = app.create_loader_version.as_ref().and_then(|current| {
+                            app.loader_versions
+                                .iter()
+                                .position(|option| &option.version == current)
+                        });
+                        let values: Vec<String> = app
+                            .loader_versions
+                            .iter()
+                            .map(|option| option.version.clone())
+                            .collect();
+                        ExposedDropdown::new(
+                            "create-loader-version",
+                            app.t("instances.loader_version_hint"),
+                        )
+                        .options(labels)
+                        .selected(selected)
+                        .full_width()
+                        .menu_max_height(320.)
+                        .on_select(cx.listener(move |this, index: &usize, _, cx| {
+                            if let Some(version) = values.get(*index) {
+                                this.create_loader_version = Some(version.clone());
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element()
                     };
                     Some(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(8.))
-                            .child(
-                                type_role(div(), TypeRole::BodySmall)
-                                    .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                                    .child(i18n::tr(lang, "instances.loader_version_hint")),
-                            )
-                            .child(body),
+                            .gap(rem(8.))
+                            .child(muted(app.t("instances.loader_version_hint")))
+                            .child(body)
+                            .into_any_element(),
                     )
                 } else {
                     None
                 };
-            let memory_chips: Vec<AnyElement> = [2048u32, 4096, 6144, 8192]
-                .into_iter()
-                .map(|mb| {
-                    FilterChip::new(format!("create-memory-{mb}"), format!("{mb} MB"))
-                        .selected(app.create_memory == mb)
-                        .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
-                            if *on {
-                                this.create_memory = mb;
-                                cx.notify();
-                            }
-                        }))
-                        .into_any_element()
-                })
-                .collect();
 
             let content = dialog_content(div())
                 .flex()
                 .flex_col()
-                .gap(px(16.))
+                .gap(rem(16.))
                 .child(
-                    div().w_full().child(
-                        TextField::new("create-name", &app.create_name)
-                            .w_full()
-                            .label(i18n::tr(lang, "instances.name"))
-                            .placeholder(i18n::tr(lang, "instances.name_placeholder")),
-                    ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.))
-                        .child(
-                            type_role(div(), TypeRole::BodySmall)
-                                .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                                .child(i18n::tr(lang, "instances.version_hint")),
-                        )
-                        .child(if version_chips.is_empty() {
-                            type_role(div(), TypeRole::BodySmall)
-                                .child(i18n::tr(lang, "common.loading"))
-                                .into_any_element()
-                        } else {
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(8.))
-                                .children(version_chips)
-                                .into_any_element()
+                    TextField::new("create-name", &app.create_name)
+                        .w_full()
+                        .label(app.t("instances.name"))
+                        .placeholder(app.t("instances.name_placeholder"))
+                        .error(field_error(app, "create-name").is_some())
+                        .when_some(field_error(app, "create-name"), |field, error| {
+                            field.supporting_text(error.clone())
                         }),
                 )
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(8.))
-                        .child(
-                            type_role(div(), TypeRole::BodySmall)
-                                .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                                .child(i18n::tr(lang, "instances.loader_hint")),
-                        )
-                        .child(div().flex().flex_wrap().gap(px(8.)).children(loader_chips)),
+                        .gap(rem(8.))
+                        .child(muted(app.t("instances.version_hint")))
+                        .child(version_dropdown),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(rem(8.))
+                        .child(muted(app.t("instances.loader_hint")))
+                        .child(loader_group),
                 )
                 .children(loader_version_section)
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(8.))
+                        .gap(rem(8.))
+                        .child(muted(app.t("instances.memory_hint")))
                         .child(
-                            type_role(div(), TypeRole::BodySmall)
-                                .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                                .child(i18n::tr(lang, "instances.memory_hint")),
-                        )
-                        .child(div().flex().flex_wrap().gap(px(8.)).children(memory_chips)),
+                            MaterialSlider::new(&app.dialog_memory_slider, app.t("common.memory"))
+                                .format(|value| format!("{:.0} MB", value.round()).into())
+                                .size(SliderSize::Medium),
+                        ),
                 )
-                .children(inline_error(app));
+                .children(
+                    (app.dialog_field_error.is_none())
+                        .then(|| dialog_error(app))
+                        .flatten(),
+                );
 
-            Some(
-                MaterialDialog::new("create-instance-dialog")
-                    .headline(i18n::tr(lang, "dialog.create_instance"))
-                    .size(DialogSize::Small)
-                    .max_width(560.0)
-                    .dividers(true)
-                    .modal(true)
-                    .content(content)
-                    .action(cancel_button(cx, lang))
-                    .action(
-                        MaterialButton::new("create-instance-confirm")
-                            .variant(ButtonVariant::Filled)
-                            .child(i18n::tr(lang, "common.create"))
-                            .on_click(cx.listener(|this, _, _, cx| this.create_instance(cx))),
-                    )
-                    .on_dismiss(dismiss)
-                    .into_any_element(),
-            )
+            let confirm = MaterialButton::new("create-instance-confirm")
+                .variant(ButtonVariant::Filled)
+                .loading(busy, app.t("common.creating"))
+                .disabled(busy)
+                .child(app.t("common.create"))
+                .on_click(cx.listener(|this, _, _, cx| this.create_instance(cx)));
+
+            let mut material = MaterialDialog::new("create-instance-dialog")
+                .headline(app.t("dialog.create_instance"))
+                .size(size)
+                .dividers(true)
+                .modal(true)
+                .track_body_scroll(&app.dialog_scroll)
+                .content(content)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
         }
         Dialog::AddAccount => {
             let tabs = [
-                (AccountTab::Offline, i18n::tr(lang, "accounts.offline")),
-                (AccountTab::Microsoft, i18n::tr(lang, "accounts.microsoft")),
+                (AccountTab::Offline, "offline", app.t("accounts.offline")),
+                (
+                    AccountTab::Microsoft,
+                    "microsoft",
+                    app.t("accounts.microsoft"),
+                ),
                 (
                     AccountTab::LittleSkin,
-                    i18n::tr(lang, "accounts.littleskin"),
+                    "littleskin",
+                    app.t("accounts.littleskin"),
                 ),
             ];
-            let chips: Vec<AnyElement> = tabs
-                .into_iter()
-                .map(|(tab, label)| {
-                    FilterChip::new(format!("account-tab-{label}"), label)
-                        .selected(app.account_tab == tab)
-                        .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
-                            if *on {
-                                this.account_tab = tab;
-                                cx.notify();
-                            }
-                        }))
-                        .into_any_element()
-                })
+            let selected = tabs
+                .iter()
+                .find(|(tab, _, _)| *tab == app.account_tab)
+                .map(|(_, value, _)| *value)
+                .unwrap_or("offline");
+            let options: Vec<(&str, &str)> = tabs
+                .iter()
+                .map(|(_, value, label)| (*value, *label))
                 .collect();
+            let group = ConnectedButtonGroup::new("account-tabs", app.t("accounts.add"))
+                .options(options)
+                .selected(selected)
+                .selection(GroupSelection::Single)
+                .segmented()
+                .on_change(cx.listener(|this, value: &SharedString, _, cx| {
+                    this.account_tab = match value.as_ref() {
+                        "microsoft" => AccountTab::Microsoft,
+                        "littleskin" => AccountTab::LittleSkin,
+                        _ => AccountTab::Offline,
+                    };
+                    this.dialog_field_error = None;
+                    this.dialog_error = None;
+                    cx.notify();
+                }));
 
             let form: AnyElement = match app.account_tab {
                 AccountTab::Offline => div()
                     .flex()
                     .flex_col()
-                    .gap(px(12.))
+                    .gap(rem(12.))
                     .child(
-                        div().w_full().child(
-                            TextField::new("offline-name", &app.account_name)
-                                .w_full()
-                                .label(i18n::tr(lang, "accounts.name"))
-                                .placeholder(i18n::tr(lang, "accounts.name_placeholder")),
-                        ),
+                        TextField::new("offline-name", &app.account_name)
+                            .w_full()
+                            .label(app.t("accounts.name"))
+                            .placeholder(app.t("accounts.name_placeholder"))
+                            .error(field_error(app, "offline-name").is_some())
+                            .when_some(field_error(app, "offline-name"), |field, error| {
+                                field.supporting_text(error.clone())
+                            }),
                     )
-                    .child(
-                        type_role(div(), TypeRole::BodySmall)
-                            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                            .child(i18n::tr(lang, "accounts.offline_hint")),
-                    )
+                    .child(muted(app.t("accounts.offline_hint")))
                     .into_any_element(),
                 AccountTab::Microsoft => div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.))
-                    .child(
-                        type_role(div(), TypeRole::BodySmall)
-                            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                            .child(i18n::tr(lang, "accounts.microsoft_hint")),
-                    )
+                    .child(muted(app.t("accounts.microsoft_hint")))
                     .into_any_element(),
                 AccountTab::LittleSkin => div()
                     .flex()
                     .flex_col()
-                    .gap(px(12.))
+                    .gap(rem(12.))
                     .child(
-                        div().w_full().child(
-                            TextField::new("authlib-server", &app.authlib_server)
-                                .w_full()
-                                .label(i18n::tr(lang, "accounts.server_url"))
-                                .placeholder(i18n::tr(lang, "accounts.server_url_placeholder")),
-                        ),
+                        TextField::new("authlib-server", &app.authlib_server)
+                            .w_full()
+                            .label(app.t("accounts.server_url"))
+                            .placeholder(app.t("accounts.server_url_placeholder"))
+                            .error(field_error(app, "authlib-server").is_some())
+                            .when_some(field_error(app, "authlib-server"), |field, error| {
+                                field.supporting_text(error.clone())
+                            }),
                     )
                     .child(
-                        div().w_full().child(
-                            TextField::new("authlib-user", &app.authlib_user)
-                                .w_full()
-                                .label(i18n::tr(lang, "accounts.email"))
-                                .input_type(TextFieldInputType::Email),
-                        ),
+                        TextField::new("authlib-user", &app.authlib_user)
+                            .w_full()
+                            .label(app.t("accounts.email"))
+                            .input_type(TextFieldInputType::Email)
+                            .error(field_error(app, "authlib-user").is_some()),
                     )
                     .child(
-                        div().w_full().child(
-                            TextField::new("authlib-password", &app.authlib_password)
-                                .w_full()
-                                .label(i18n::tr(lang, "accounts.password"))
-                                .input_type(TextFieldInputType::Password),
-                        ),
+                        TextField::new("authlib-password", &app.authlib_password)
+                            .w_full()
+                            .label(app.t("accounts.password"))
+                            .input_type(TextFieldInputType::Password)
+                            .error(field_error(app, "authlib-password").is_some()),
                     )
                     .into_any_element(),
             };
@@ -404,44 +419,43 @@ pub fn render(
             let content = dialog_content(div())
                 .flex()
                 .flex_col()
-                .gap(px(16.))
-                .child(div().flex().flex_wrap().gap(px(8.)).children(chips))
+                .gap(rem(16.))
+                .child(group)
                 .child(form)
-                .children(inline_error(app));
+                .children(
+                    (app.dialog_field_error.is_none())
+                        .then(|| dialog_error(app))
+                        .flatten(),
+                );
 
-            let confirm = match app.account_tab {
-                AccountTab::Offline => MaterialButton::new("add-offline-confirm")
-                    .variant(ButtonVariant::Filled)
-                    .child(i18n::tr(lang, "common.add"))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.add_offline_account(window, cx)),
-                    )
-                    .into_any_element(),
-                AccountTab::Microsoft => MaterialButton::new("add-microsoft-confirm")
-                    .variant(ButtonVariant::Filled)
-                    .child(i18n::tr(lang, "accounts.login"))
-                    .on_click(cx.listener(|this, _, _, cx| this.start_microsoft_login(cx)))
-                    .into_any_element(),
-                AccountTab::LittleSkin => MaterialButton::new("add-authlib-confirm")
-                    .variant(ButtonVariant::Filled)
-                    .child(i18n::tr(lang, "accounts.login"))
-                    .on_click(cx.listener(|this, _, _, cx| this.add_authlib_account(cx)))
-                    .into_any_element(),
+            let (label, confirm_id) = match app.account_tab {
+                AccountTab::Offline => (app.t("common.add"), "add-offline-confirm"),
+                AccountTab::Microsoft => (app.t("accounts.login"), "add-microsoft-confirm"),
+                AccountTab::LittleSkin => (app.t("accounts.login"), "add-authlib-confirm"),
             };
+            let confirm = MaterialButton::new(confirm_id)
+                .variant(ButtonVariant::Filled)
+                .loading(busy, app.t("common.signing_in"))
+                .disabled(busy)
+                .child(label)
+                .on_click(cx.listener(|this, _, window, cx| match this.account_tab {
+                    AccountTab::Offline => this.add_offline_account(window, cx),
+                    AccountTab::Microsoft => this.start_microsoft_login(cx),
+                    AccountTab::LittleSkin => this.add_authlib_account(cx),
+                }));
 
-            Some(
-                MaterialDialog::new("add-account-dialog")
-                    .headline(i18n::tr(lang, "dialog.add_account"))
-                    .size(DialogSize::Small)
-                    .max_width(520.0)
-                    .dividers(true)
-                    .modal(true)
-                    .content(content)
-                    .action(cancel_button(cx, lang))
-                    .action(confirm)
-                    .on_dismiss(dismiss)
-                    .into_any_element(),
-            )
+            let mut material = MaterialDialog::new("add-account-dialog")
+                .headline(app.t("dialog.add_account"))
+                .size(size)
+                .dividers(true)
+                .modal(true)
+                .track_body_scroll(&app.dialog_scroll)
+                .content(content)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
         }
         Dialog::MicrosoftLogin {
             user_code,
@@ -452,26 +466,26 @@ pub fn render(
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(16.))
+                .gap(rem(16.))
                 .child(
                     type_role(div(), TypeRole::BodyMedium)
                         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                         .text_center()
-                        .child(i18n::tr(lang, "accounts.microsoft_waiting")),
+                        .child(app.t("accounts.microsoft_waiting")),
                 )
                 .child(
                     div()
                         .w_full()
-                        .rounded(px(20.))
+                        .rounded(rem(20.))
                         .bg(color(ColorRole::SURFACE_CONTAINER_HIGHEST))
-                        .p(px(24.))
+                        .p(rem(24.))
                         .flex()
                         .items_center()
                         .justify_center()
                         .child(
                             type_scale(div(), TypeRole::HeadlineLarge.emphasized()).child(
                                 if user_code.is_empty() {
-                                    i18n::tr(lang, "common.loading").to_string()
+                                    app.t("common.loading").to_string()
                                 } else {
                                     user_code.clone()
                                 },
@@ -488,12 +502,13 @@ pub fn render(
                     let code = user_code.clone();
                     div()
                         .flex()
-                        .gap(px(8.))
+                        .flex_wrap()
+                        .gap(rem(8.))
                         .child(
                             MaterialButton::new("microsoft-copy-code")
                                 .variant(ButtonVariant::Text)
-                                .icon(material_icon("content_copy", 18.0))
-                                .child(i18n::tr(lang, "common.copy"))
+                                .icon(material_icon("content_copy", 20.0))
+                                .child(app.t("common.copy"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
                                     this.show_toast(this.t("common.copied"), false, cx);
@@ -502,196 +517,232 @@ pub fn render(
                         .child(
                             MaterialButton::new("microsoft-open-browser")
                                 .variant(ButtonVariant::Tonal)
-                                .icon(material_icon("open_in_new", 18.0))
-                                .child(i18n::tr(lang, "accounts.microsoft"))
+                                .icon(material_icon("open_in_new", 20.0))
+                                .child(app.t("accounts.microsoft"))
                                 .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
                         )
                         .into_any_element()
                 }))
                 .child(if waiting {
-                    type_role(div(), TypeRole::BodySmall)
-                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                        .child(i18n::tr(lang, "common.loading"))
-                        .into_any_element()
+                    loading_panel(app, "microsoft-waiting", "common.loading")
                 } else {
                     div().into_any_element()
                 });
 
-            Some(
-                MaterialDialog::new("microsoft-login-dialog")
-                    .headline(i18n::tr(lang, "accounts.microsoft"))
-                    .size(DialogSize::Small)
-                    .max_width(480.0)
-                    .modal(true)
-                    .content(content)
-                    .action(cancel_button(cx, lang))
-                    .on_dismiss(dismiss)
-                    .into_any_element(),
-            )
+            let mut material = MaterialDialog::new("microsoft-login-dialog")
+                .headline(app.t("accounts.microsoft"))
+                .size(size)
+                .modal(true)
+                .track_body_scroll(&app.dialog_scroll)
+                .content(content)
+                .action(cancel_button(cx, lang, busy))
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
         }
         Dialog::AddServer => {
             let content = dialog_content(div())
                 .flex()
                 .flex_col()
-                .gap(px(16.))
+                .gap(rem(16.))
                 .child(
-                    div().w_full().child(
-                        TextField::new("server-name", &app.server_name)
-                            .w_full()
-                            .label(i18n::tr(lang, "servers.name")),
-                    ),
+                    TextField::new("server-name", &app.server_name)
+                        .w_full()
+                        .label(app.t("servers.name")),
                 )
                 .child(
-                    div().w_full().child(
-                        TextField::new("server-address", &app.server_address)
-                            .w_full()
-                            .label(i18n::tr(lang, "servers.address"))
-                            .placeholder(i18n::tr(lang, "servers.address_placeholder")),
-                    ),
+                    TextField::new("server-address", &app.server_address)
+                        .w_full()
+                        .label(app.t("servers.address"))
+                        .placeholder(app.t("servers.address_placeholder"))
+                        .error(field_error(app, "server-address").is_some())
+                        .when_some(field_error(app, "server-address"), |field, error| {
+                            field.supporting_text(error.clone())
+                        }),
                 )
-                .children(inline_error(app));
-            Some(
-                MaterialDialog::new("add-server-dialog")
-                    .headline(i18n::tr(lang, "dialog.add_server"))
-                    .size(DialogSize::Small)
-                    .max_width(480.0)
-                    .modal(true)
-                    .content(content)
-                    .action(cancel_button(cx, lang))
-                    .action(
-                        MaterialButton::new("add-server-confirm")
-                            .variant(ButtonVariant::Filled)
-                            .child(i18n::tr(lang, "common.add"))
-                            .on_click(cx.listener(|this, _, _, cx| this.add_server(cx))),
-                    )
-                    .on_dismiss(dismiss)
-                    .into_any_element(),
-            )
+                .children(
+                    (app.dialog_field_error.is_none())
+                        .then(|| dialog_error(app))
+                        .flatten(),
+                );
+            let confirm = MaterialButton::new("add-server-confirm")
+                .variant(ButtonVariant::Filled)
+                .loading(busy, app.t("common.adding"))
+                .disabled(busy)
+                .child(app.t("common.add"))
+                .on_click(cx.listener(|this, _, _, cx| this.add_server(cx)));
+            let mut material = MaterialDialog::new("add-server-dialog")
+                .headline(app.t("dialog.add_server"))
+                .size(size)
+                .dividers(true)
+                .modal(true)
+                .track_body_scroll(&app.dialog_scroll)
+                .content(content)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
         }
         Dialog::ImportModpack => {
             let content = dialog_content(div())
                 .flex()
                 .flex_col()
-                .gap(px(16.))
+                .gap(rem(16.))
+                .child(muted(app.t("library.import_hint")))
                 .child(
-                    type_role(div(), TypeRole::BodySmall)
-                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                        .child(i18n::tr(lang, "library.import_hint")),
-                )
-                .child(
-                    div().w_full().child(
-                        TextField::new("modpack-path", &app.modpack_path)
-                            .w_full()
-                            .label(i18n::tr(lang, "library.import_path")),
-                    ),
+                    TextField::new("modpack-path", &app.modpack_path)
+                        .w_full()
+                        .label(app.t("library.import_path"))
+                        .error(field_error(app, "modpack-path").is_some())
+                        .when_some(field_error(app, "modpack-path"), |field, error| {
+                            field.supporting_text(error.clone())
+                        }),
                 );
-            Some(
-                MaterialDialog::new("import-modpack-dialog")
-                    .headline(i18n::tr(lang, "library.import_title"))
-                    .size(DialogSize::Small)
-                    .max_width(560.0)
-                    .modal(true)
-                    .content(content)
-                    .action(cancel_button(cx, lang))
-                    .action(
-                        MaterialButton::new("import-modpack-confirm")
-                            .variant(ButtonVariant::Filled)
-                            .icon(material_icon("upload_file", 18.0))
-                            .child(i18n::tr(lang, "library.import_confirm"))
-                            .on_click(cx.listener(|this, _, _, cx| this.import_modpack(cx))),
-                    )
-                    .on_dismiss(dismiss)
-                    .into_any_element(),
-            )
+            let confirm = MaterialButton::new("import-modpack-confirm")
+                .variant(ButtonVariant::Filled)
+                .icon(material_icon("upload_file", 20.0))
+                .loading(busy, app.t("common.importing"))
+                .disabled(busy)
+                .child(app.t("library.import_confirm"))
+                .on_click(cx.listener(|this, _, _, cx| this.import_modpack(cx)));
+            let mut material = MaterialDialog::new("import-modpack-dialog")
+                .headline(app.t("library.import_title"))
+                .size(size)
+                .dividers(true)
+                .modal(true)
+                .track_body_scroll(&app.dialog_scroll)
+                .content(content)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
         }
-        Dialog::DeleteInstance(id) => {
+        Dialog::DeleteInstance { id, name } => {
             let target = id.clone();
-            Some(
-                MaterialDialog::new("delete-instance-dialog")
-                    .headline(i18n::tr(lang, "dialog.delete_instance"))
-                    .supporting_text(i18n::tr(lang, "dialog.delete_confirm"))
-                    .size(DialogSize::Small)
-                    .modal(true)
-                    .action(cancel_button(cx, lang))
-                    .action(
-                        destructive_button(
-                            "delete-instance-confirm",
-                            i18n::tr(lang, "common.delete"),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.delete_instance(target.clone(), cx)
-                        })),
-                    )
-                    .on_dismiss(dismiss)
-                    .into_any_element(),
-            )
+            let supporting = app
+                .t("dialog.delete_instance_named")
+                .replace("{name}", &name);
+            let confirm = destructive_button("delete-instance-confirm", app.t("common.delete"))
+                .loading(busy, app.t("common.removing"))
+                .disabled(busy)
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.delete_instance(target.clone(), cx)),
+                );
+            let mut material = MaterialDialog::new("delete-instance-dialog")
+                .headline(app.t("dialog.delete_instance"))
+                .supporting_text(supporting)
+                .size(size)
+                .modal(true)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
+        }
+        Dialog::DeleteServer { id, name } => {
+            let target = id.clone();
+            let supporting = app.t("dialog.delete_server_named").replace("{name}", &name);
+            let confirm = destructive_button("delete-server-confirm", app.t("servers.remove"))
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.confirm_remove_server(target.clone(), cx)
+                }));
+            let mut material = MaterialDialog::new("delete-server-dialog")
+                .headline(app.t("dialog.delete_server"))
+                .supporting_text(supporting)
+                .size(size)
+                .modal(true)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
+        }
+        Dialog::RemoveAccount { id, name } => {
+            let target = id.clone();
+            let supporting = app
+                .t("dialog.remove_account_named")
+                .replace("{name}", &name);
+            let confirm = destructive_button("remove-account-confirm", app.t("accounts.remove"))
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.confirm_remove_account(target.clone(), cx)
+                }));
+            let mut material = MaterialDialog::new("remove-account-dialog")
+                .headline(app.t("dialog.remove_account"))
+                .supporting_text(supporting)
+                .size(size)
+                .modal(true)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
         }
         Dialog::ConfirmRemoveContent {
             instance_id,
             project_type,
             filename,
-        } => Some(
-            MaterialDialog::new("remove-content-dialog")
-                .headline(i18n::tr(lang, "instances.remove_mod"))
-                .supporting_text(filename.clone())
-                .size(DialogSize::Small)
-                .modal(true)
-                .action(cancel_button(cx, lang))
-                .action(
-                    destructive_button(
-                        "remove-content-confirm",
-                        i18n::tr(lang, "instances.remove_mod"),
-                    )
+        } => {
+            let remove_filename = filename.clone();
+            let confirm =
+                destructive_button("remove-content-confirm", app.t("instances.remove_mod"))
+                    .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.remove_content(
                             instance_id.clone(),
                             project_type.clone(),
-                            filename.clone(),
+                            remove_filename.clone(),
                             cx,
                         )
-                    })),
-                )
-                .on_dismiss(dismiss)
-                .into_any_element(),
-        ),
+                    }));
+            let mut material = MaterialDialog::new("remove-content-dialog")
+                .headline(app.t("instances.remove_mod"))
+                .supporting_text(filename.clone())
+                .size(size)
+                .modal(true)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
+        }
         Dialog::ImportInstance => {
             let content = dialog_content(div())
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(rem(12.))
                 .child(
-                    div().w_full().child(
-                        TextField::new("import-path", &app.import_path)
-                            .w_full()
-                            .label(i18n::tr(lang, "backups.import_path"))
-                            .placeholder(i18n::tr(lang, "backups.import_placeholder")),
-                    ),
+                    TextField::new("import-path", &app.import_path)
+                        .w_full()
+                        .label(app.t("backups.import_path"))
+                        .placeholder(app.t("backups.import_placeholder"))
+                        .error(field_error(app, "import-path").is_some())
+                        .when_some(field_error(app, "import-path"), |field, error| {
+                            field.supporting_text(error.clone())
+                        }),
                 )
-                .child(
-                    type_role(div(), TypeRole::BodySmall)
-                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                        .child(i18n::tr(lang, "backups.import_hint")),
-                );
-            Some(
-                MaterialDialog::new("import-instance-dialog")
-                    .headline(i18n::tr(lang, "dialog.import_instance"))
-                    .size(DialogSize::Small)
-                    .max_width(520.0)
-                    .modal(true)
-                    .content(content)
-                    .action(cancel_button(cx, lang))
-                    .action(
-                        MaterialButton::new("import-instance-confirm")
-                            .variant(ButtonVariant::Filled)
-                            .icon(material_icon("download", 18.0))
-                            .child(i18n::tr(lang, "common.import"))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.import_instance(window, cx)),
-                            ),
-                    )
-                    .on_dismiss(dismiss)
-                    .into_any_element(),
-            )
+                .child(muted(app.t("backups.import_hint")));
+            let confirm = MaterialButton::new("import-instance-confirm")
+                .variant(ButtonVariant::Filled)
+                .icon(material_icon("download", 20.0))
+                .loading(busy, app.t("common.importing"))
+                .disabled(busy)
+                .child(app.t("common.import"))
+                .on_click(cx.listener(|this, _, window, cx| this.import_instance(window, cx)));
+            let mut material = MaterialDialog::new("import-instance-dialog")
+                .headline(app.t("dialog.import_instance"))
+                .size(size)
+                .modal(true)
+                .track_body_scroll(&app.dialog_scroll)
+                .content(content)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
         }
         Dialog::RestoreBackup {
             instance_id,
@@ -700,34 +751,24 @@ pub fn render(
         } => {
             let target_instance = instance_id.clone();
             let target_backup = backup_id.clone();
-            Some(
-                MaterialDialog::new("restore-backup-dialog")
-                    .headline(i18n::tr(lang, "dialog.restore_backup"))
-                    .supporting_text(format!(
-                        "{}\n{}",
-                        label,
-                        i18n::tr(lang, "dialog.restore_confirm")
-                    ))
-                    .size(DialogSize::Small)
-                    .max_width(480.0)
-                    .modal(true)
-                    .action(cancel_button(cx, lang))
-                    .action(
-                        MaterialButton::new("restore-backup-confirm")
-                            .variant(ButtonVariant::Filled)
-                            .icon(material_icon("settings_backup_restore", 18.0))
-                            .child(i18n::tr(lang, "backups.restore"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.restore_backup(
-                                    target_instance.clone(),
-                                    target_backup.clone(),
-                                    cx,
-                                )
-                            })),
-                    )
-                    .on_dismiss(dismiss)
-                    .into_any_element(),
-            )
+            let confirm = MaterialButton::new("restore-backup-confirm")
+                .variant(ButtonVariant::Filled)
+                .icon(material_icon("settings_backup_restore", 20.0))
+                .disabled(busy)
+                .child(app.t("backups.restore"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.restore_backup(target_instance.clone(), target_backup.clone(), cx)
+                }));
+            let mut material = MaterialDialog::new("restore-backup-dialog")
+                .headline(app.t("dialog.restore_backup"))
+                .supporting_text(format!("{}\n{}", label, app.t("dialog.restore_confirm")))
+                .size(size)
+                .modal(true)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
         }
         Dialog::DeleteBackup {
             instance_id,
@@ -736,30 +777,43 @@ pub fn render(
         } => {
             let target_instance = instance_id.clone();
             let target_backup = backup_id.clone();
-            Some(
-                MaterialDialog::new("delete-backup-dialog")
-                    .headline(i18n::tr(lang, "dialog.delete_backup"))
-                    .supporting_text(format!(
-                        "{}\n{}",
-                        label,
-                        i18n::tr(lang, "dialog.delete_backup_confirm")
-                    ))
-                    .size(DialogSize::Small)
-                    .max_width(480.0)
-                    .modal(true)
-                    .action(cancel_button(cx, lang))
-                    .action(
-                        destructive_button(
-                            "delete-backup-confirm",
-                            i18n::tr(lang, "common.delete"),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.delete_backup(target_instance.clone(), target_backup.clone(), cx)
-                        })),
-                    )
-                    .on_dismiss(dismiss)
-                    .into_any_element(),
-            )
+            let confirm = destructive_button("delete-backup-confirm", app.t("common.delete"))
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.delete_backup(target_instance.clone(), target_backup.clone(), cx)
+                }));
+            let mut material = MaterialDialog::new("delete-backup-dialog")
+                .headline(app.t("dialog.delete_backup"))
+                .supporting_text(format!(
+                    "{}\n{}",
+                    label,
+                    app.t("dialog.delete_backup_confirm")
+                ))
+                .size(size)
+                .modal(true)
+                .action(cancel_button(cx, lang, busy))
+                .action(confirm)
+                .on_dismiss(dismiss);
+            material = finish_dialog(material, window, lang);
+            Some(material.into_any_element())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dialog_size_for;
+    use gpui_kit_material::components::{DialogSize, WindowWidthClass};
+
+    #[test]
+    fn the_create_dialog_is_wide_on_desktop() {
+        assert!(matches!(
+            dialog_size_for(WindowWidthClass::Compact),
+            DialogSize::FullScreen
+        ));
+        assert!(matches!(
+            dialog_size_for(WindowWidthClass::Expanded),
+            DialogSize::Medium
+        ));
     }
 }
