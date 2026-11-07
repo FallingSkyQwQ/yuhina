@@ -4,10 +4,10 @@
 | --- | --- |
 | Date | 2026-11-07 |
 | Repository | `C:\Users\youzilm\Documents\projects\yuhina` |
-| Branch / HEAD | `feat/rewrite-m3e` / **`e786039650dad51b3637ce87fdc97c70d5243ab8`** |
-| Working tree | HEAD plus uncommitted brand/icon/dev-capture work (`src/brand_assets.rs`, `build.rs`, `resources/icons/yuhina.ico`, `src/main.rs`, `src/ui/mod.rs`, `Cargo.toml`). That work is treated as in progress and is not graded as shipped. |
+| Branch / HEAD | `feat/rewrite-m3e` / **`a935e3d57070755afd02a10c053f356dab1abded`** (audit started at `e786039`; the intervening core/doc commits are incorporated) |
+| Working tree | Code tree clean at `a935e3d`. The brand/icon work, the `text_scale` setting model, and the rewritten living docs landed during the review and are included in the evidence where they affect the finding. This report is the only file modified by the review. |
 | Kit | `gpui-kit-material` `26c0cb1713311280919113e14b552034e492d573` |
-| Constraint | Keep Material 3 Expressive and `gpui-kit-material`; use the Apple HIG as the quality bar, not as a request to replace the visual language or add macOS-only chrome. No `src/`, `Cargo.toml`, or other docs were modified. No commit or push. |
+| Constraint | Keep Material 3 Expressive and `gpui-kit-material`; use the Apple HIG as the quality bar, not as a request to replace the visual language or add macOS-only chrome. This review edited only this report: no source, `Cargo.toml`, or other doc was modified by the reviewer. No commit or push was made by this review. |
 | Evidence | Code at the HEAD above, `design/reviews/rewrite-m3e/*.png`, `design/reviews/md3e-audit-fix/*.png`, `design/reviews/merged-m3e/*.png`, and the official HIG pages cited inline. No new screenshots are part of this report. |
 
 ## How to read this review
@@ -22,7 +22,7 @@ This is a real Material 3 Expressive launcher, not a themed mock-up. The tonal-s
 
 The HIG bar exposes three systemic problems that the Material-only audits did not:
 
-1. **The app still has no reachable text-size setting.** `init_component_theme(..., 1.0, ...)` is hard-coded, there is no 100/150/200% control, and page geometry is in `px`. HIG Accessibility asks for at least 200% enlargement; the product spec itself requires the layout to tolerate 200%. At 200% the text grows (page text is rem-based) while page padding and row geometry stay in `px`.
+1. **The app still has no reachable text-size setting.** The `text_scale` field now exists in `core::settings` (0.8–2.0), but `init_component_theme(..., 1.0, ...)` is still hard-coded and no page exposes the value. HIG Accessibility asks for at least 200% enlargement; the product spec itself requires the layout to tolerate 200%. At 200% the text grows (page text is rem-based) while page padding and row geometry stay in `px`.
 2. **The primary-action hierarchy is flat.** Home has a filled Create + filled Play in the hero, a filled Play on every recent card, and a global FAB. Instances has a filled header Create, a tonal Import, a rail FAB, and a filled Play on every row. HIG Buttons asks for one or two prominent buttons per view. The compact FAB also physically covers a row's Play button at 500 px.
 3. **A bespoke control layer remains on top of a complete component kit.** Instances, accounts, servers, library results, backups and Java runtimes are hand-built `div` rows; Library is a text field plus a Search button; Settings and dialogs use `FilterChip` as radio buttons; the only `ListItem` in the product is in the Files tab. This is why row height, focus, press feedback and truncation vary from page to page.
 
@@ -52,10 +52,11 @@ The HIG bar exposes three systemic problems that the Material-only audits did no
 
 **Evidence**
 
-- `src/main.rs:50` — `theme::init_component_theme(scheme, 1.0, cx);` The kit's rem scale is pinned at 1.0.
-- `src/main.rs:51` — only `ReduceMotion::On` reaches `cx.set_reduce_motion`; there is no analogous text-scale path.
+- `src/main.rs:45` — `theme::init_component_theme(scheme, 1.0, cx);` The kit's rem scale is pinned at 1.0.
+- `src/main.rs:46` — only `ReduceMotion::On` reaches `cx.set_reduce_motion`; there is no analogous text-scale path.
+- `src/core/settings.rs:117-118` — `text_scale: f32` is persisted and clamped to 0.8–2.0, but it is never read by the UI or passed to the theme. It is a dead setting.
 - `src/ui/pages.rs:33-64` — the page frame uses fixed `px(32.)` gutters, `max_w(px(1120.))`, and a fixed `pb(px(160.))` at compact. `pages.rs` contains 158 `px()` occurrences for geometry; only the text roles and the icons (`mod.rs:2269-2271`) are rem-based.
-- `src/ui/pages.rs:2423-2742` — the Settings page has theme, language, motion, download source, memory and Java sections, but no text-size control. The product spec (`docs/product-spec.md:119-122`) and `docs/design-system.md:42-44` both require 200% tolerance.
+- `src/ui/pages.rs:2423-2742` — the Settings page has theme, language, motion, download source, memory and Java sections, but no text-size control. The product spec (§ Accessibility) and `docs/design-system.md` (§ Accessibility, § Spacing and shape) both require 200% tolerance.
 - The committed captures are all at 100%; there is no 150% or 200% capture in any review folder.
 
 **HIG rule**
@@ -68,15 +69,15 @@ The HIG bar exposes three systemic problems that the Material-only audits did no
 
 **Why this deviates**
 
-The app cannot reach the required enlargement at all: the scale is a literal `1.0` and there is no user-facing control. Page text is rem-based through `TypeRole`, so raising the scale would grow the text, but the gutters, card/row heights, dialog widths and the fixed `pb(160.)` are `px`, so the text would grow inside geometry that cannot follow it. That is the exact clipping/overlap the HIG warns about. This is a foundation failure, not a missing preference.
+The app cannot reach the required enlargement at all: the scale is a literal `1.0`, the newly added `settings.text_scale` is never applied, and there is no user-facing control. Page text is rem-based through `TypeRole`, so raising the scale would grow the text, but the gutters, card/row heights, dialog widths and the fixed `pb(160.)` are `px`, so the text would grow inside geometry that cannot follow it. That is the exact clipping/overlap the HIG warns about. This is a foundation failure, not a missing preference.
 
 **Concrete fix**
 
-1. Add `text_scale: u16` (100/125/150/200) to `core::settings::Settings`, persisted like the theme.
-2. Pass `scale` to `theme::init_component_theme(scheme, scale, cx)` at startup and to `theme::advance_component_theme(scheme, scale, window, cx)` in `animate_theme`; apply the change without a restart.
+1. Wire the existing `settings.text_scale` (0.8–2.0, already clamped) through `theme::init_component_theme` and `advance_component_theme`; do not add a second scale model.
+2. Pass the value to `theme::init_component_theme(scheme, scale, cx)` at startup and to `theme::advance_component_theme(scheme, scale, window, cx)` in `animate_theme`; apply the change without a restart.
 3. Convert page geometry that must grow with text to `rem(...)` (gutters, card padding, row gaps, dialog body padding). Keep structural widths (rail 96/220, window minimum) in `px`.
 4. In the Settings page, add a `ConnectedButtonGroup` (segmented) with 100/125/150/200% and a "Reset" text button.
-5. Capture 100/150/200% at 800×600 and 500×700 in zh-CN and en-US; add a predicate test that no text or action rect exceeds the viewport.
+5. Capture 100/125/150/200% at 800×600 and 500×700 in zh-CN and en-US; add a predicate test that no text or action rect exceeds the viewport.
 
 **Acceptance:** 200% is selectable, persists across restart, applies immediately, and every page remains operable at 800×600 and 500×700 with no clipped controls or overlapping text.
 
@@ -414,9 +415,9 @@ The snackbar is the app's only error channel, yet it is positioned over the prim
 
 **Evidence**
 
-- `src/main.rs:59-61` — native title bar with `title: Some("Yuhina")`, `appears_transparent: false`; no appearance sync.
+- `src/main.rs:54-58` — native title bar with `title: Some("Yuhina")`, `appears_transparent: false`; no appearance sync.
 - `design/reviews/rewrite-m3e/home-light.png` and `settings-native-light.png` — the Windows caption is near-black above a near-white app. The client changed to Expressive after these captures, but `main.rs` still uses the same native title-bar options.
-- `src/main.rs:55-58` — a fixed 1440×900 window at `(24, 24)`; no explicit minimum size.
+- `src/main.rs:50-53` — a fixed 1440×900 window at `(24, 24)`; no explicit minimum size.
 - The uncommitted `build.rs` + `resources/icons/yuhina.ico` work now supplies an app icon; keep it.
 
 **HIG rule**
@@ -514,9 +515,9 @@ A create/add/remove that touches the filesystem or network can freeze the render
 
 **Evidence**
 
-- `src/core/settings.rs:128-134` — `ThemePreference::System => true` (always dark).
-- `src/core/settings.rs:138-145` — the locale comes from `LANG`/`LC_ALL`, normally unset on Windows.
-- `src/main.rs:51` — `matches!(settings.reduce_motion, ReduceMotion::On)`; `System` resolves to false.
+- `src/core/settings.rs:149-155` — `ThemePreference::System => true` (always dark).
+- `src/core/settings.rs:159-166` — the locale comes from `LANG`/`LC_ALL`, normally unset on Windows.
+- `src/main.rs:46` — `matches!(settings.reduce_motion, ReduceMotion::On)`; `System` resolves to false.
 - `src/ui/pages.rs:2477-2504` — the motion chips save the value and call `set_reduce_motion(value == On)`; selecting System sets it to false.
 - `src/ui/pages.rs:2426-2441` — only Dark and Light theme chips are offered, even though the enum has System.
 - `src/ui/mod.rs:803-813` — `toggle_theme` always flips and persists an explicit preference.
@@ -684,13 +685,13 @@ Six equal-weight actions flatten the hierarchy, put a destructive Delete one mis
 
 #### HIG-19 — Spacing, radii and icon sizes are off the app's own rhythm
 
-**Evidence:** `pages.rs` gaps are 2/4/6/8/10/12/14/16/24; radii are 14/16/18/20/22/24/32/999; icons are 16/18/20/22/24/26/32. `docs/design-system.md:57-64` defines a 24/16/10 rhythm and 32/24/20/14–16 radii; M3's corner scale is 4/8/12/16/20/28/32/48. The 18/22/24 radii and 18/22/26 icons are not steps in either system.
+**Evidence:** `pages.rs` gaps are 2/4/6/8/10/12/14/16/24; radii are 14/16/18/20/22/24/32/999; icons are 16/18/20/22/24/26/32. `docs/design-system.md` § Spacing and shape now mandates an **8 dp grid with 4 dp sub-steps**, radii **8/12/16/20/24/28–32**, and icons **20/24/32**. The 2/6/10/14 gaps, 14/18/22/24 radii and 18/22/26 icons are not steps in the app's own system; M3's corner scale is also 4/8/12/16/20/28/32/48.
 
 **HIG rule:** "Align elements to make them easier to scan…" and "Use consistent spacing" — <https://developer.apple.com/design/human-interface-guidelines/layout>; "Care about every detail" — <https://developer.apple.com/design/human-interface-guidelines/design-principles>.
 
-**Why this deviates:** The eye reads 18/22/24 as different levels even when they are meant to be the same; the inconsistency is visible when rows from different pages sit together, and it stops the radius from communicating hierarchy the way `docs/design-system.md:46-55` intends.
+**Why this deviates:** The eye reads 18/22/24 as different levels even when they are meant to be the same; the inconsistency is visible when rows from different pages sit together, and it stops the radius from communicating hierarchy the way `docs/design-system.md` § Spacing and shape intends.
 
-**Fix:** define `space::{XS,S,M,L,XL} = 4/8/12/16/24` and `radius::{ROW,CARD,DIALOG,HERO}` from the kit tokens; replace literal px spacing in page code; use 20/24 icons for component icons and 32 only for empty-state glyphs; keep 999 for status pills. **Acceptance:** grep shows no literal `gap(px(6|10|14))` or `rounded(px(18|22|24))` in page code; visual regression shows the same hierarchy.
+**Fix:** define `space::{XS,S,M,L,XL} = 4/8/12/16/24/32` on the 8 dp grid and `radius::{CONTROL,MENU,CARD,ROW,PANEL,HERO}` = 8/12/16/20/24/28–32 from the kit tokens; replace literal px spacing in page code; use 20/24 icons for component icons and 32 only for empty-state/brand glyphs; keep 999 for status pills. **Acceptance:** grep shows no literal `gap(px(2|6|10|14))` or `rounded(px(14|18|22))` in page code; visual regression shows the same hierarchy at 100% and 200%.
 
 #### HIG-20 — Nested boxes instead of separators
 
@@ -734,7 +735,7 @@ Six equal-weight actions flatten the hierarchy, put a destructive Delete one mis
 
 #### HIG-24 — Motion: no page continuity, and "System" reduce-motion is inert
 
-**Evidence:** `src/ui/pages.rs:4-14` swaps the whole page with no transition; `src/ui/mod.rs:2005-2249` rebuilds the content; `src/main.rs:51` and `pages.rs:2495-2500` only honour `On`. `docs/design-system.md:68-72` promises reduced motion disables transforms; `System` does not.
+**Evidence:** `src/ui/pages.rs:4-14` swaps the whole page with no transition; `src/ui/mod.rs:2005-2249` rebuilds the content; `src/main.rs:46` and `pages.rs:2495-2500` only honour `On`. `docs/design-system.md` § Motion promises reduced motion disables transforms; `System` does not.
 
 **HIG rule:** "Add motion purposefully, supporting the experience without overshadowing it." — <https://developer.apple.com/design/human-interface-guidelines/motion>; "Make motion optional." — same page; "Let people cancel motion." — same page.
 
@@ -744,7 +745,7 @@ Six equal-weight actions flatten the hierarchy, put a destructive Delete one mis
 
 #### HIG-25 — Window sizing: no explicit minimum and a fixed origin
 
-**Evidence:** `src/main.rs:55-58` — `window_bounds` at `(24, 24)` with `1440×900`, no min size. `main.rs:12-20` allows `YUHINA_SIZE` for tests but no clamp to the work area. The merged 1440 capture is host-clipped, which is a host limitation; the app still has no policy.
+**Evidence:** `src/main.rs:50-58` — `window_bounds` at `(24, 24)` with `1440×900`, no explicit min size. `main.rs:12-20` allows `YUHINA_SIZE` for tests but no clamp to the work area. The merged 1440 capture is host-clipped, which is a host limitation; the app still has no policy.
 
 **HIG rule:** "Choose a minimum and maximum size for each window to help keep your content looking great. … If you don't set a minimum and maximum size … people could make it so small that UI elements overlap…" — <https://developer.apple.com/design/human-interface-guidelines/windows>; "Avoid placing controls or critical information at the bottom of a window." — same page (macOS).
 
