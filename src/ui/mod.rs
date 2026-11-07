@@ -2273,13 +2273,14 @@ pub fn material_icon(name: &str, size: f32) -> Icon {
 fn logo() -> impl IntoElement {
     div()
         .size(px(32.))
-        .rounded(px(10.))
-        .bg(color(ColorRole::PRIMARY))
-        .text_color(color(ColorRole::ON_PRIMARY))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(16.))
-        .font_weight(FontWeight::BOLD)
-        .child("Y")
+        .child(
+            svg()
+                .path(crate::brand_assets::BRAND_MARK)
+                .w(px(24.))
+                .h(px(24.))
+                .text_color(color(ColorRole::PRIMARY)),
+        )
 }

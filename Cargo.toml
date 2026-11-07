@@ -42,6 +42,9 @@ opt-level = 3
 [profile.dev.package.gpui-fast]
 opt-level = 3
 
+[build-dependencies]
+winres = "0.1"
+
 [patch.crates-io]
 gpui-base = { git = "https://github.com/mizorewww/gpui-kit-material", rev = "26c0cb1713311280919113e14b552034e492d573" }
 gpui-pre = { git = "https://github.com/mizorewww/gpui-kit-material", rev = "26c0cb1713311280919113e14b552034e492d573" }
