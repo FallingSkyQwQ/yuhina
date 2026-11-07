@@ -2816,8 +2816,10 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                         })),
                 )
                 .child(section_label(app, "settings.java_detected"))
-                .child(if java_rows.is_empty() {
+                .child(if app.loading.java {
                     loading_panel(app, "java-loading", "common.loading")
+                } else if java_rows.is_empty() {
+                    muted(app.t("common.empty")).into_any_element()
                 } else {
                     div()
                         .flex()
