@@ -1,14 +1,16 @@
 pub mod dialogs;
 pub mod i18n;
 pub mod pages;
+pub mod platform;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gpui_kit::base::input::InputState;
+use gpui_kit::base::input::{InputEvent, InputState};
+use gpui_kit::base::slider::{SliderEvent, SliderState};
 use gpui_kit::{prelude::*, *};
 use gpui_kit_material::color::themes::{Contrast, ThemeId, ThemeMode};
 use gpui_kit_material::icons::{Icon, Symbol};
@@ -31,7 +33,8 @@ use crate::core::modrinth::{self, SearchResult};
 use crate::core::news::{self, NewsState};
 use crate::core::servers::{self, ServerRecord, ServerStatus};
 use crate::core::settings::{
-    self as core_settings, DownloadSource, JavaSettings, Language, Settings, ThemePreference,
+    self as core_settings, DownloadSource, JavaSettings, Language, LanguageMode, ReduceMotion,
+    Settings, ThemePreference,
 };
 use crate::core::skins;
 use crate::core::updates::{self, UpdateInfo};
@@ -46,7 +49,7 @@ pub const APP_THEME: ThemeId = ThemeId::Expressive;
 /// Standard contrast for now; a persisted low-vision setting can replace it.
 pub const APP_CONTRAST: Contrast = Contrast::Standard;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Page {
     Home,
     Instances,
@@ -129,9 +132,19 @@ pub struct Loading {
 }
 
 #[derive(Clone, Debug)]
+pub enum ToastAction {
+    Instances,
+    Accounts,
+    Servers,
+    Library,
+    News,
+}
+
+#[derive(Clone, Debug)]
 pub struct Toast {
     pub text: String,
     pub error: bool,
+    pub action: Option<(&'static str, ToastAction)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,7 +165,18 @@ pub enum Dialog {
     },
     AddServer,
     ImportModpack,
-    DeleteInstance(String),
+    DeleteInstance {
+        id: String,
+        name: String,
+    },
+    DeleteServer {
+        id: String,
+        name: String,
+    },
+    RemoveAccount {
+        id: String,
+        name: String,
+    },
     ConfirmRemoveContent {
         instance_id: String,
         project_type: String,
@@ -225,10 +249,13 @@ pub struct Yuhina {
     pub java_runtimes: Vec<JavaRuntime>,
     pub update: Option<UpdateInfo>,
     pub update_checked: bool,
-    pub toast: Option<Toast>,
+    pub toasts: VecDeque<Toast>,
     pub dialog: Option<Dialog>,
     pub dialog_error: Option<String>,
-    pub overflow_open: bool,
+    pub dialog_field_error: Option<&'static str>,
+    pub dialog_busy: bool,
+    pub dialog_scroll: ScrollHandle,
+    pub menu_open: Option<String>,
     pub loading: Loading,
     pub instance_error: Option<String>,
     pub account_error: Option<String>,
@@ -259,16 +286,40 @@ pub struct Yuhina {
     pub files_entries: Vec<FileEntry>,
     pub files_relative: String,
     pub file_preview: Option<TextPreview>,
+    pub search_generation: u64,
+    pub memory_slider: Entity<SliderState>,
+    pub dialog_memory_slider: Entity<SliderState>,
+    pub scroll: HashMap<Page, ScrollHandle>,
+    pub reduce_motion: bool,
+    pub window_title: String,
     theme_pending: bool,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Yuhina {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let paths = Paths::discover().unwrap_or_else(|_| Paths::at("."));
         let settings = core_settings::load(&paths).unwrap_or_default();
-        let lang = settings.effective_language();
+        let lang = if settings.language_mode == LanguageMode::System {
+            platform::system_language().unwrap_or_else(|| settings.effective_language())
+        } else {
+            settings.effective_language()
+        };
+        let system_dark = platform::system_dark(matches!(
+            cx.window_appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        ));
         let dark_override = std::env::var("YUHINA_DARK").ok().map(|value| value != "0");
-        let dark = dark_override.unwrap_or_else(|| settings.effective_theme());
+        let dark = dark_override.unwrap_or(match settings.theme {
+            ThemePreference::Dark => true,
+            ThemePreference::Light => false,
+            ThemePreference::System => system_dark,
+        });
+        let reduce_motion = match settings.reduce_motion {
+            ReduceMotion::On => true,
+            ReduceMotion::Off => false,
+            ReduceMotion::System => platform::system_reduce_motion(),
+        };
         let mut settings = settings;
         if let Some(dark) = dark_override {
             settings.theme = if dark {
@@ -312,9 +363,37 @@ impl Yuhina {
         let authlib_server = cx.new(|cx| InputState::new(window, cx));
         let authlib_user = cx.new(|cx| InputState::new(window, cx));
         let authlib_password = cx.new(|cx| InputState::new(window, cx));
-        let search_input = cx.new(|cx| InputState::new(window, cx));
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(i18n::tr(lang, "library.search_placeholder"))
+        });
         let import_path = cx.new(|cx| InputState::new(window, cx));
         let backup_label = cx.new(|cx| InputState::new(window, cx));
+        let memory_slider = cx.new(|_| {
+            SliderState::new()
+                .min(1024.)
+                .max(16384.)
+                .step(512.)
+                .default_value(settings.instance_defaults.memory_mb as f32)
+        });
+        let dialog_memory_slider = cx.new(|_| {
+            SliderState::new()
+                .min(1024.)
+                .max(16384.)
+                .step(512.)
+                .default_value(4096.)
+        });
+        let scroll = [
+            Page::Home,
+            Page::Instances,
+            Page::Library,
+            Page::Accounts,
+            Page::Servers,
+            Page::Activity,
+            Page::Settings,
+        ]
+        .into_iter()
+        .map(|page| (page, ScrollHandle::new()))
+        .collect();
 
         let mut this = Self {
             paths,
@@ -344,10 +423,13 @@ impl Yuhina {
             java_runtimes: Vec::new(),
             update: None,
             update_checked: false,
-            toast: None,
+            toasts: VecDeque::new(),
             dialog,
             dialog_error: None,
-            overflow_open: false,
+            dialog_field_error: None,
+            dialog_busy: false,
+            dialog_scroll: ScrollHandle::new(),
+            menu_open: None,
             loading: Loading::default(),
             instance_error: None,
             account_error: None,
@@ -378,8 +460,52 @@ impl Yuhina {
             files_entries: Vec::new(),
             files_relative: String::new(),
             file_preview: None,
+            search_generation: 0,
+            memory_slider,
+            dialog_memory_slider,
+            scroll,
+            reduce_motion,
+            window_title: String::new(),
             theme_pending: false,
+            _subscriptions: Vec::new(),
         };
+        cx.set_reduce_motion(reduce_motion);
+        let search_subscription = cx.subscribe_in(
+            &this.search_input,
+            window,
+            |this, _input, event: &InputEvent, _window, cx| match event {
+                InputEvent::Change => this.schedule_library_search(cx),
+                InputEvent::PressEnter { .. } => this.search_library(cx),
+                _ => {}
+            },
+        );
+        let memory_subscription = cx.subscribe_in(
+            &this.memory_slider,
+            window,
+            |this, _slider, event: &SliderEvent, _window, cx| {
+                if let SliderEvent::Change(value) = event {
+                    this.settings.instance_defaults.memory_mb =
+                        value.start().round().clamp(1024., 16384.) as u32;
+                    let _ = core_settings::save(&this.paths, &this.settings);
+                    cx.notify();
+                }
+            },
+        );
+        let dialog_memory_subscription = cx.subscribe_in(
+            &this.dialog_memory_slider,
+            window,
+            |this, _slider, event: &SliderEvent, _window, cx| {
+                if let SliderEvent::Change(value) = event {
+                    this.create_memory = value.start().round().clamp(1024., 16384.) as u32;
+                    cx.notify();
+                }
+            },
+        );
+        this._subscriptions = vec![
+            search_subscription,
+            memory_subscription,
+            dialog_memory_subscription,
+        ];
         this.refresh_all(cx);
         // A Forge/NeoForge instance preselected at launch (or restored in the
         // create dialog) needs its installer builds without waiting for the
@@ -426,11 +552,7 @@ impl Yuhina {
             ErrorCode::External => "error.external",
         };
         let message = self.t(key);
-        if message == "…" {
-            error.message.clone()
-        } else {
-            message.to_string()
-        }
+        message.to_string()
     }
 
     pub fn loader_label(&self, loader: LoaderType) -> &'static str {
@@ -519,7 +641,11 @@ impl Yuhina {
                     }
                     Err(error) => {
                         this.instance_error = Some(this.error_text(&error));
-                        this.show_error(error, cx);
+                        this.show_error_with(
+                            error,
+                            Some(("common.retry", ToastAction::Instances)),
+                            cx,
+                        );
                     }
                 }
             },
@@ -546,7 +672,11 @@ impl Yuhina {
                     }
                     Err(error) => {
                         this.account_error = Some(this.error_text(&error));
-                        this.show_error(error, cx);
+                        this.show_error_with(
+                            error,
+                            Some(("common.retry", ToastAction::Accounts)),
+                            cx,
+                        );
                     }
                 }
             },
@@ -611,7 +741,11 @@ impl Yuhina {
                     }
                     Err(error) => {
                         this.server_error = Some(this.error_text(&error));
-                        this.show_error(error, cx);
+                        this.show_error_with(
+                            error,
+                            Some(("common.retry", ToastAction::Servers)),
+                            cx,
+                        );
                     }
                 }
             },
@@ -637,7 +771,7 @@ impl Yuhina {
                     }
                     Err(error) => {
                         this.news_error = Some(this.error_text(&error));
-                        this.show_error(error, cx);
+                        this.show_error_with(error, Some(("common.retry", ToastAction::News)), cx);
                     }
                 }
             },
@@ -714,31 +848,109 @@ impl Yuhina {
         );
     }
 
+    /// Queue a transient confirmation. Queueing instead of replacing means a
+    /// second failure is still readable after the first is dismissed.
     pub fn show_toast(&mut self, text: impl Into<String>, error: bool, cx: &mut Context<Self>) {
-        self.toast = Some(Toast {
-            text: text.into(),
-            error,
-        });
+        self.push_toast(
+            Toast {
+                text: text.into(),
+                error,
+                action: None,
+            },
+            cx,
+        );
+    }
+
+    pub fn show_error(&mut self, error: YuhinaError, cx: &mut Context<Self>) {
+        self.show_error_with(error, None, cx);
+    }
+
+    /// A failure with an optional Retry action. Errors stay until dismissed;
+    /// success confirmations use the component's short timer.
+    pub fn show_error_with(
+        &mut self,
+        error: YuhinaError,
+        action: Option<(&'static str, ToastAction)>,
+        cx: &mut Context<Self>,
+    ) {
+        let message = self.error_text(&error);
+        self.push_toast(
+            Toast {
+                text: message,
+                error: true,
+                action,
+            },
+            cx,
+        );
+    }
+
+    fn push_toast(&mut self, toast: Toast, cx: &mut Context<Self>) {
+        if self
+            .toasts
+            .back()
+            .is_some_and(|queued| queued.error == toast.error && queued.text == toast.text)
+        {
+            return;
+        }
+        let is_success = !toast.error;
+        self.toasts.push_back(toast);
+        if is_success {
+            self.arm_success_dismiss(cx);
+        }
+        cx.notify();
+    }
+
+    fn arm_success_dismiss(&mut self, cx: &mut Context<Self>) {
+        let Some(front) = self.toasts.front() else {
+            return;
+        };
+        if front.error {
+            return;
+        }
+        let expected = front.text.clone();
         let weak = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             cx.background_executor().timer(Duration::from_secs(4)).await;
             let _ = weak.update(cx, |this, cx| {
-                this.toast = None;
-                cx.notify();
+                let same = this
+                    .toasts
+                    .front()
+                    .is_some_and(|toast| toast.text == expected && !toast.error);
+                if same {
+                    this.toasts.pop_front();
+                    this.arm_success_dismiss(cx);
+                    cx.notify();
+                }
             });
         })
         .detach();
+    }
+
+    pub fn dismiss_toast(&mut self, cx: &mut Context<Self>) {
+        self.toasts.pop_front();
+        self.arm_success_dismiss(cx);
         cx.notify();
     }
 
-    pub fn show_error(&mut self, error: YuhinaError, cx: &mut Context<Self>) {
-        let message = self.error_text(&error);
-        self.show_toast(message, true, cx);
+    pub fn run_toast_action(&mut self, cx: &mut Context<Self>) {
+        let action = self.toasts.front().and_then(|toast| toast.action.clone());
+        self.dismiss_toast(cx);
+        let Some((_, action)) = action else {
+            return;
+        };
+        match action {
+            ToastAction::Instances => self.refresh_instances(cx),
+            ToastAction::Accounts => self.refresh_accounts(cx),
+            ToastAction::Servers => self.refresh_servers(cx),
+            ToastAction::Library => self.search_library(cx),
+            ToastAction::News => self.refresh_news(cx, true),
+        }
     }
 
     pub fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
         self.page = page;
-        self.selected_instance = None;
+        // Each section keeps its own detail, tab and scroll offset. Clearing
+        // the selection here made Library -> Instances lose the open instance.
         match page {
             Page::Home => {
                 if self.instances.is_empty() {
@@ -786,30 +998,92 @@ impl Yuhina {
     }
 
     pub fn open_instance(&mut self, id: String, cx: &mut Context<Self>) {
+        let changed = self.selected_instance.as_deref() != Some(id.as_str());
         self.selected_instance = Some(id);
-        self.instance_tab = InstanceTab::Overview;
-        self.backups.clear();
-        self.files_entries.clear();
-        self.files_relative.clear();
-        self.file_preview = None;
+        if changed {
+            self.instance_tab = InstanceTab::Overview;
+            self.backups.clear();
+            self.files_entries.clear();
+            self.files_relative.clear();
+            self.file_preview = None;
+        }
         self.page = Page::Instances;
         cx.notify();
+    }
+
+    /// The standard back affordance for the instance detail.
+    pub fn back_to_instances(&mut self, cx: &mut Context<Self>) {
+        self.selected_instance = None;
+        self.menu_open = None;
+        cx.notify();
+    }
+
+    pub fn page_scroll(&self, page: Page) -> ScrollHandle {
+        self.scroll
+            .get(&page)
+            .cloned()
+            .unwrap_or_else(ScrollHandle::new)
+    }
+
+    fn window_title_text(&self) -> String {
+        if self.page == Page::Instances
+            && let Some(id) = &self.selected_instance
+            && let Some(item) = self.instances.iter().find(|item| &item.record.id == id)
+        {
+            return item.record.name.clone();
+        }
+        self.t(self.page.title_key()).to_string()
     }
 
     // -----------------------------------------------------------------
     // Theme and language
     // -----------------------------------------------------------------
 
-    pub fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.dark = !self.dark;
-        self.settings.theme = if self.dark {
-            ThemePreference::Dark
-        } else {
-            ThemePreference::Light
+    pub fn set_theme(
+        &mut self,
+        preference: ThemePreference,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.theme == preference {
+            return;
+        }
+        self.settings.theme = preference;
+        self.dark = match preference {
+            ThemePreference::Dark => true,
+            ThemePreference::Light => false,
+            ThemePreference::System => platform::system_dark(matches!(
+                cx.window_appearance(),
+                WindowAppearance::Dark | WindowAppearance::VibrantDark
+            )),
         };
+        let _ = core_settings::save(&self.paths, &self.settings);
+        cx.set_window_appearance(Some(if self.dark {
+            WindowAppearance::Dark
+        } else {
+            WindowAppearance::Light
+        }));
+        platform::sync_caption(window, self.dark);
+        self.animate_theme(window, cx);
+        cx.notify();
+    }
+
+    /// Persist and apply a new text scale immediately. The scale travels to
+    /// both the Component projection and the window's rem size, so rem-based
+    /// gutters, row padding and dialog padding grow with the type.
+    pub fn set_text_scale(&mut self, scale: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let scale = core_settings::clamp_text_scale(scale);
+        if (self.settings.text_scale - scale).abs() < f32::EPSILON {
+            return;
+        }
+        self.settings.text_scale = scale;
         let _ = core_settings::save(&self.paths, &self.settings);
         self.animate_theme(window, cx);
         cx.notify();
+    }
+
+    pub fn reset_text_scale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_text_scale(core_settings::TEXT_SCALE_DEFAULT, window, cx);
     }
 
     fn animate_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -821,7 +1095,7 @@ impl Yuhina {
             },
             APP_CONTRAST,
         );
-        let running = theme::advance_component_theme(scheme, 1.0, window, cx);
+        let running = theme::advance_component_theme(scheme, self.settings.text_scale, window, cx);
         if running && !self.theme_pending {
             self.theme_pending = true;
             let view = cx.entity().downgrade();
@@ -834,16 +1108,47 @@ impl Yuhina {
         }
     }
 
-    pub fn toggle_language(&mut self, cx: &mut Context<Self>) {
-        self.lang = match self.lang {
-            Language::ZhCn => Language::EnUs,
-            Language::EnUs => Language::ZhCn,
+    pub fn set_language_mode(
+        &mut self,
+        mode: LanguageMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.language_mode == mode {
+            return;
+        }
+        self.settings.language_mode = mode;
+        let lang = match mode {
+            LanguageMode::ZhCn => Language::ZhCn,
+            LanguageMode::EnUs => Language::EnUs,
+            LanguageMode::System => {
+                platform::system_language().unwrap_or_else(|| self.settings.effective_language())
+            }
         };
-        self.settings.language = self.lang;
-        self.settings.language_mode = match self.lang {
-            Language::ZhCn => crate::core::settings::LanguageMode::ZhCn,
-            Language::EnUs => crate::core::settings::LanguageMode::EnUs,
+        self.lang = lang;
+        self.settings.language = lang;
+        let _ = core_settings::save(&self.paths, &self.settings);
+        self.search_input.update(cx, |input, cx| {
+            input.set_placeholder(i18n::tr(lang, "library.search_placeholder"), window, cx);
+        });
+        cx.notify();
+    }
+
+    pub fn set_reduce_motion_preference(
+        &mut self,
+        preference: ReduceMotion,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.reduce_motion == preference {
+            return;
+        }
+        self.settings.reduce_motion = preference;
+        self.reduce_motion = match preference {
+            ReduceMotion::On => true,
+            ReduceMotion::Off => false,
+            ReduceMotion::System => platform::system_reduce_motion(),
         };
+        cx.set_reduce_motion(self.reduce_motion);
         let _ = core_settings::save(&self.paths, &self.settings);
         cx.notify();
     }
@@ -855,6 +1160,8 @@ impl Yuhina {
     pub fn open_create_dialog(&mut self, cx: &mut Context<Self>) {
         self.dialog = Some(Dialog::CreateInstance);
         self.dialog_error = None;
+        self.dialog_field_error = None;
+        self.dialog_busy = false;
         if matches!(self.create_loader, LoaderType::Forge | LoaderType::Neoforge)
             && !self.create_version.is_empty()
         {
@@ -946,6 +1253,11 @@ impl Yuhina {
     }
 
     pub fn create_instance(&mut self, cx: &mut Context<Self>) {
+        if self.dialog_busy {
+            return;
+        }
+        self.dialog_field_error = None;
+        self.dialog_error = None;
         let name = self.create_name.read(cx).value().to_string();
         let loader_name = self.loader_label(self.create_loader);
         let name = if name.trim().is_empty() {
@@ -953,17 +1265,20 @@ impl Yuhina {
         } else {
             name.trim().to_string()
         };
+        if name.is_empty() || name.chars().count() > 64 {
+            self.dialog_field_error = Some("create-name");
+            self.dialog_error = Some(self.t("instances.name_invalid").to_string());
+            return;
+        }
         if self.create_version.is_empty() {
-            let message = self.t("instances.unknown_version").to_string();
-            self.dialog_error = Some(message.clone());
-            self.show_toast(message, true, cx);
+            self.dialog_field_error = None;
+            self.dialog_error = Some(self.t("instances.unknown_version").to_string());
             return;
         }
         let uses_installer = matches!(self.create_loader, LoaderType::Forge | LoaderType::Neoforge);
         if uses_installer && self.create_loader_version.is_none() {
-            let message = self.t("instances.loader_version_required").to_string();
-            self.dialog_error = Some(message.clone());
-            self.show_toast(message, true, cx);
+            self.dialog_field_error = None;
+            self.dialog_error = Some(self.t("instances.loader_version_required").to_string());
             return;
         }
         let loader_version = if uses_installer {
@@ -983,19 +1298,29 @@ impl Yuhina {
             memory_mode: MemoryMode::Manual,
             icon: None,
         };
-        match instances::create(&paths, new) {
-            Ok(record) => {
-                self.dialog = None;
-                self.dialog_error = None;
-                self.open_instance(record.id.clone(), cx);
-                self.refresh_instances(cx);
-                self.start_install(record.id, cx);
-            }
-            Err(error) => {
-                self.dialog_error = Some(self.error_text(&error));
-                self.show_error(error, cx);
-            }
-        }
+        self.dialog_busy = true;
+        cx.notify();
+        spawn_task(
+            cx,
+            move || instances::create(&paths, new),
+            |this, result, cx| {
+                this.dialog_busy = false;
+                match result {
+                    Ok(record) => {
+                        this.dialog = None;
+                        this.dialog_error = None;
+                        this.dialog_field_error = None;
+                        this.open_instance(record.id.clone(), cx);
+                        this.refresh_instances(cx);
+                        this.start_install(record.id, cx);
+                    }
+                    Err(error) => {
+                        this.dialog_error = Some(this.error_text(&error));
+                        this.show_error(error, cx);
+                    }
+                }
+            },
+        );
     }
 
     pub fn duplicate_instance(&mut self, id: String, cx: &mut Context<Self>) {
@@ -1015,41 +1340,65 @@ impl Yuhina {
     }
 
     pub fn delete_instance(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.dialog_busy {
+            return;
+        }
         let paths = self.paths.clone();
         let target = id.clone();
+        self.dialog_busy = true;
+        cx.notify();
         spawn_task(
             cx,
             move || instances::delete(&paths, &id, false),
-            move |this, result, cx| match result {
-                Ok(()) => {
-                    this.dialog = None;
-                    if this.selected_instance.as_deref() == Some(target.as_str()) {
-                        this.selected_instance = None;
+            move |this, result, cx| {
+                this.dialog_busy = false;
+                match result {
+                    Ok(()) => {
+                        this.dialog = None;
+                        if this.selected_instance.as_deref() == Some(target.as_str()) {
+                            this.selected_instance = None;
+                        }
+                        this.refresh_instances(cx);
+                        this.show_toast(this.t("toast.removed"), false, cx);
                     }
-                    this.refresh_instances(cx);
-                    this.show_toast(this.t("toast.removed"), false, cx);
+                    Err(error) => this.show_error(error, cx),
                 }
-                Err(error) => this.show_error(error, cx),
             },
         );
     }
 
     pub fn open_folder(&mut self, id: &str, cx: &mut Context<Self>) {
         let path = self.paths.game_dir(id).unwrap_or_default();
-        let _ = std::fs::create_dir_all(&path);
-        #[cfg(target_os = "windows")]
-        {
-            let _ = std::process::Command::new("explorer").arg(&path).spawn();
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let _ = std::process::Command::new("open").arg(&path).spawn();
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
-        }
-        self.show_toast(self.t("toast.folder_opened"), false, cx);
+        let display = path.clone();
+        spawn_task(
+            cx,
+            move || -> crate::core::Result<PathBuf> {
+                std::fs::create_dir_all(&path)?;
+                Ok(path)
+            },
+            move |this, result, cx| match result {
+                Ok(path) => {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = std::process::Command::new("explorer").arg(&path).spawn();
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        let _ = std::process::Command::new("open").arg(&path).spawn();
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+                    }
+                    let _ = &path;
+                    this.show_toast(this.t("toast.folder_opened"), false, cx);
+                }
+                Err(error) => {
+                    let _ = &display;
+                    this.show_error(error, cx);
+                }
+            },
+        );
     }
 
     pub fn start_install(&mut self, id: String, cx: &mut Context<Self>) {
@@ -1250,36 +1599,60 @@ impl Yuhina {
     // -----------------------------------------------------------------
 
     pub fn add_offline_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self.account_name.read(cx).value().to_string();
-        let paths = self.paths.clone();
-        match accounts::add_offline(&paths, &name) {
-            Ok(items) => {
-                self.accounts = items;
-                self.dialog = None;
-                self.dialog_error = None;
-                self.account_name
-                    .update(cx, |input, cx| input.set_value("", window, cx));
-                self.show_toast(self.t("toast.account_added"), false, cx);
-            }
-            Err(error) => {
-                self.dialog_error = Some(self.error_text(&error));
-                self.show_error(error, cx);
-            }
+        if self.dialog_busy {
+            return;
         }
+        self.dialog_field_error = None;
+        self.dialog_error = None;
+        let name = self.account_name.read(cx).value().to_string();
+        if !valid_offline_name(&name) {
+            self.dialog_field_error = Some("offline-name");
+            self.dialog_error = Some(self.t("accounts.offline_hint").to_string());
+            return;
+        }
+        let paths = self.paths.clone();
+        self.dialog_busy = true;
+        cx.notify();
+        spawn_task(
+            cx,
+            move || accounts::add_offline(&paths, &name),
+            |this, result, cx| {
+                this.dialog_busy = false;
+                match result {
+                    Ok(items) => {
+                        this.accounts = items;
+                        this.dialog = None;
+                        this.dialog_error = None;
+                        this.show_toast(this.t("toast.account_added"), false, cx);
+                    }
+                    Err(error) => {
+                        this.dialog_error = Some(this.error_text(&error));
+                        this.show_error(error, cx);
+                    }
+                }
+            },
+        );
+        let _ = window;
     }
 
     pub fn start_microsoft_login(&mut self, cx: &mut Context<Self>) {
+        if self.dialog_busy {
+            return;
+        }
         self.dialog_error = None;
+        self.dialog_busy = true;
         self.dialog = Some(Dialog::MicrosoftLogin {
             user_code: String::new(),
             verification_uri: String::new(),
             waiting: true,
         });
+        cx.notify();
         spawn_task(
             cx,
             accounts::start_device_code,
             |this, result, cx| match result {
                 Ok(code) => {
+                    this.dialog_busy = false;
                     cx.open_url(&code.verification_uri);
                     this.dialog = Some(Dialog::MicrosoftLogin {
                         user_code: code.user_code.clone(),
@@ -1293,41 +1666,71 @@ impl Yuhina {
                         move || accounts::complete_microsoft_login(&paths, &code_clone, |_| {}),
                         |this, result, cx| match result {
                             Ok(_) => {
+                                this.dialog_busy = false;
                                 this.dialog = None;
                                 this.dialog_error = None;
                                 this.refresh_accounts(cx);
                                 this.show_toast(this.t("toast.account_added"), false, cx);
                             }
                             Err(error) => {
+                                this.dialog_busy = false;
                                 this.dialog_error = Some(this.error_text(&error));
                                 this.show_error(error, cx);
                             }
                         },
                     );
                 }
-                Err(error) => this.show_error(error, cx),
+                Err(error) => {
+                    this.dialog_busy = false;
+                    this.show_error(error, cx);
+                }
             },
         );
     }
 
     pub fn add_authlib_account(&mut self, cx: &mut Context<Self>) {
+        if self.dialog_busy {
+            return;
+        }
+        self.dialog_field_error = None;
+        self.dialog_error = None;
         let server = self.authlib_server.read(cx).value().to_string();
         let user = self.authlib_user.read(cx).value().to_string();
         let password = self.authlib_password.read(cx).value().to_string();
+        if server.trim().is_empty() {
+            self.dialog_field_error = Some("authlib-server");
+            self.dialog_error = Some(self.t("accounts.server_url_required").to_string());
+            return;
+        }
+        if user.trim().is_empty() {
+            self.dialog_field_error = Some("authlib-user");
+            self.dialog_error = Some(self.t("accounts.email_required").to_string());
+            return;
+        }
+        if password.is_empty() {
+            self.dialog_field_error = Some("authlib-password");
+            self.dialog_error = Some(self.t("accounts.password_required").to_string());
+            return;
+        }
         let paths = self.paths.clone();
+        self.dialog_busy = true;
+        cx.notify();
         spawn_task(
             cx,
             move || accounts::add_authlib(&paths, &server, &user, &password),
-            |this, result, cx| match result {
-                Ok(_) => {
-                    this.dialog = None;
-                    this.dialog_error = None;
-                    this.refresh_accounts(cx);
-                    this.show_toast(this.t("toast.account_added"), false, cx);
-                }
-                Err(error) => {
-                    this.dialog_error = Some(this.error_text(&error));
-                    this.show_error(error, cx);
+            |this, result, cx| {
+                this.dialog_busy = false;
+                match result {
+                    Ok(_) => {
+                        this.dialog = None;
+                        this.dialog_error = None;
+                        this.refresh_accounts(cx);
+                        this.show_toast(this.t("toast.account_added"), false, cx);
+                    }
+                    Err(error) => {
+                        this.dialog_error = Some(this.error_text(&error));
+                        this.show_error(error, cx);
+                    }
                 }
             },
         );
@@ -1335,57 +1738,126 @@ impl Yuhina {
 
     pub fn set_active_account(&mut self, id: String, cx: &mut Context<Self>) {
         let paths = self.paths.clone();
+        let target = id.clone();
+        let is_littleskin = self.accounts.iter().any(|account| {
+            account.id == id && account.kind == crate::core::accounts::AccountKind::Littleskin
+        });
         spawn_task(
             cx,
-            move || accounts::set_active(&paths, &id),
+            move || {
+                // A LittleSkin session may be stale; refreshing updates the
+                // access token, profile and skin URL before it is made active.
+                if is_littleskin {
+                    accounts::refresh_authlib(&paths, &target)?;
+                }
+                accounts::set_active(&paths, &target)
+            },
             |this, result, cx| match result {
-                Ok(items) => this.accounts = items,
+                Ok(items) => {
+                    this.accounts = items;
+                    this.refresh_skins(cx);
+                }
                 Err(error) => this.show_error(error, cx),
             },
         );
     }
 
-    pub fn remove_account(&mut self, id: String, cx: &mut Context<Self>) {
+    pub fn prompt_remove_account(&mut self, id: String, name: String, cx: &mut Context<Self>) {
+        self.dialog = Some(Dialog::RemoveAccount { id, name });
+        self.dialog_error = None;
+        self.dialog_busy = false;
+        cx.notify();
+    }
+
+    pub fn confirm_remove_account(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.dialog_busy {
+            return;
+        }
         let paths = self.paths.clone();
+        self.dialog_busy = true;
+        cx.notify();
         spawn_task(
             cx,
             move || accounts::remove(&paths, &id),
-            |this, result, cx| match result {
-                Ok(items) => this.accounts = items,
-                Err(error) => this.show_error(error, cx),
+            |this, result, cx| {
+                this.dialog_busy = false;
+                match result {
+                    Ok(items) => {
+                        this.accounts = items;
+                        this.dialog = None;
+                        this.show_toast(this.t("toast.removed"), false, cx);
+                    }
+                    Err(error) => this.show_error(error, cx),
+                }
             },
         );
     }
 
     pub fn add_server(&mut self, cx: &mut Context<Self>) {
+        if self.dialog_busy {
+            return;
+        }
+        self.dialog_field_error = None;
+        self.dialog_error = None;
         let name = self.server_name.read(cx).value().to_string();
         let address = self.server_address.read(cx).value().to_string();
-        let paths = self.paths.clone();
-        match servers::add(&paths, &name, &address, None) {
-            Ok(_) => {
-                self.dialog = None;
-                self.dialog_error = None;
-                self.refresh_servers(cx);
-                self.show_toast(self.t("toast.server_added"), false, cx);
-            }
-            Err(error) => {
-                self.dialog_error = Some(self.error_text(&error));
-                self.show_error(error, cx);
-            }
+        if address.trim().is_empty() {
+            self.dialog_field_error = Some("server-address");
+            self.dialog_error = Some(self.t("servers.address_required").to_string());
+            return;
         }
+        let paths = self.paths.clone();
+        self.dialog_busy = true;
+        cx.notify();
+        spawn_task(
+            cx,
+            move || servers::add(&paths, &name, &address, None),
+            |this, result, cx| {
+                this.dialog_busy = false;
+                match result {
+                    Ok(_) => {
+                        this.dialog = None;
+                        this.dialog_error = None;
+                        this.refresh_servers(cx);
+                        this.show_toast(this.t("toast.server_added"), false, cx);
+                    }
+                    Err(error) => {
+                        this.dialog_error = Some(this.error_text(&error));
+                        this.show_error(error, cx);
+                    }
+                }
+            },
+        );
     }
 
-    pub fn remove_server(&mut self, id: String, cx: &mut Context<Self>) {
+    pub fn prompt_remove_server(&mut self, id: String, name: String, cx: &mut Context<Self>) {
+        self.dialog = Some(Dialog::DeleteServer { id, name });
+        self.dialog_error = None;
+        self.dialog_busy = false;
+        cx.notify();
+    }
+
+    pub fn confirm_remove_server(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.dialog_busy {
+            return;
+        }
         let paths = self.paths.clone();
+        self.dialog_busy = true;
+        cx.notify();
         spawn_task(
             cx,
             move || servers::remove(&paths, &id),
-            |this, result, cx| match result {
-                Ok(items) => {
-                    this.servers = items;
-                    this.statuses.clear();
+            |this, result, cx| {
+                this.dialog_busy = false;
+                match result {
+                    Ok(items) => {
+                        this.servers = items;
+                        this.statuses.clear();
+                        this.dialog = None;
+                        this.show_toast(this.t("toast.removed"), false, cx);
+                    }
+                    Err(error) => this.show_error(error, cx),
                 }
-                Err(error) => this.show_error(error, cx),
             },
         );
     }
@@ -1422,10 +1894,32 @@ impl Yuhina {
         .detach();
     }
 
+    /// Search now (Enter, a filter change or a retry).
     pub fn search_library(&mut self, cx: &mut Context<Self>) {
-        if self.loading.library {
-            return;
-        }
+        self.search_generation = self.search_generation.wrapping_add(1);
+        let generation = self.search_generation;
+        self.run_library_search(generation, cx);
+    }
+
+    /// Refine while typing: wait 250 ms after the last change. Any newer
+    /// change invalidates the pending search, and a stale response is ignored.
+    pub fn schedule_library_search(&mut self, cx: &mut Context<Self>) {
+        self.search_generation = self.search_generation.wrapping_add(1);
+        let generation = self.search_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(250))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.search_generation == generation {
+                    this.run_library_search(generation, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn run_library_search(&mut self, generation: u64, cx: &mut Context<Self>) {
         self.loading.library = true;
         self.library_error = None;
         self.search_query = self.search_input.read(cx).value().to_string();
@@ -1446,7 +1940,10 @@ impl Yuhina {
                     0,
                 )
             },
-            |this, result, cx| {
+            move |this, result, cx| {
+                if this.search_generation != generation {
+                    return;
+                }
                 this.loading.library = false;
                 match result {
                     Ok(results) => {
@@ -1461,11 +1958,21 @@ impl Yuhina {
                             offset: 0,
                             limit: 0,
                         });
-                        this.show_error(error, cx);
+                        this.show_error_with(
+                            error,
+                            Some(("common.retry", ToastAction::Library)),
+                            cx,
+                        );
                     }
                 }
             },
         );
+    }
+
+    pub fn clear_library_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.search_library(cx);
     }
 
     pub fn library_loader(&self) -> Option<String> {
@@ -1522,7 +2029,8 @@ impl Yuhina {
             },
             |this, result, cx| match result {
                 Ok(files) => this.show_toast(
-                    format!("{} ({})", this.t("library.install_done"), files.len()),
+                    this.t("library.install_done_count")
+                        .replace("{count}", &files.len().to_string()),
                     false,
                     cx,
                 ),
@@ -1678,7 +2186,8 @@ impl Yuhina {
                         .map(|name| name.to_string_lossy().to_string())
                         .unwrap_or_default();
                     this.show_toast(
-                        format!("{} {}", this.t("backups.export_done"), filename),
+                        this.t("backups.export_done_name")
+                            .replace("{name}", &filename),
                         false,
                         cx,
                     );
@@ -1689,6 +2198,10 @@ impl Yuhina {
     }
 
     pub fn import_instance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dialog_busy {
+            return;
+        }
+        self.dialog_field_error = None;
         let raw = self
             .import_path
             .read(cx)
@@ -1697,24 +2210,30 @@ impl Yuhina {
             .trim_matches('"')
             .to_string();
         if raw.is_empty() {
-            self.show_toast(self.t("backups.import_path_required"), true, cx);
+            self.dialog_field_error = Some("import-path");
+            self.dialog_error = Some(self.t("backups.import_path_required").to_string());
             return;
         }
         self.import_path
             .update(cx, |input, cx| input.set_value("", window, cx));
         let paths = self.paths.clone();
         let source = PathBuf::from(raw);
+        self.dialog_busy = true;
+        cx.notify();
         spawn_task(
             cx,
             move || export::import(&paths, &source, |_| {}),
-            |this, result, cx| match result {
-                Ok(record) => {
-                    this.dialog = None;
-                    this.refresh_instances(cx);
-                    this.open_instance(record.id, cx);
-                    this.show_toast(this.t("backups.imported_toast"), false, cx);
+            |this, result, cx| {
+                this.dialog_busy = false;
+                match result {
+                    Ok(record) => {
+                        this.dialog = None;
+                        this.refresh_instances(cx);
+                        this.open_instance(record.id, cx);
+                        this.show_toast(this.t("backups.imported_toast"), false, cx);
+                    }
+                    Err(error) => this.show_error(error, cx),
                 }
-                Err(error) => this.show_error(error, cx),
             },
         );
     }
@@ -1780,11 +2299,22 @@ impl Yuhina {
         self.loading.modpack = true;
         let paths = self.paths.clone();
         let source = self.settings.download_source;
+        let java_settings = self.settings.java.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         cx.notify();
         spawn_task(
             cx,
-            move || modpack::install_modrinth(&paths, &project_id, None, source, cancel, |_| {}),
+            move || {
+                modpack::install_modrinth_with_java(
+                    &paths,
+                    &project_id,
+                    None,
+                    source,
+                    &java_settings,
+                    cancel,
+                    |_| {},
+                )
+            },
             |this, result, cx| {
                 this.loading.modpack = false;
                 match result {
@@ -1803,14 +2333,17 @@ impl Yuhina {
         if self.loading.modpack {
             return;
         }
+        self.dialog_field_error = None;
         let value = self.modpack_path.read(cx).value().to_string();
         let value = value.trim().to_string();
         if value.is_empty() {
-            self.show_toast(self.t("library.import_empty"), true, cx);
+            self.dialog_field_error = Some("modpack-path");
+            self.dialog_error = Some(self.t("library.import_empty").to_string());
             return;
         }
         let paths = self.paths.clone();
         let source = self.settings.download_source;
+        let java_settings = self.settings.java.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let path = PathBuf::from(value);
         self.loading.modpack = true;
@@ -1818,7 +2351,16 @@ impl Yuhina {
         cx.notify();
         spawn_task(
             cx,
-            move || modpack::import_local(&paths, &path, source, cancel, |_| {}),
+            move || {
+                modpack::import_local_with_java(
+                    &paths,
+                    &path,
+                    source,
+                    &java_settings,
+                    cancel,
+                    |_| {},
+                )
+            },
             |this, result, cx| {
                 this.loading.modpack = false;
                 match result {
@@ -1840,14 +2382,26 @@ impl Yuhina {
         filename: String,
         cx: &mut Context<Self>,
     ) {
-        let paths = self.paths.clone();
-        match modrinth::remove_file(&paths, &instance_id, &project_type, &filename) {
-            Ok(()) => {
-                self.dialog = None;
-                self.show_toast(self.t("toast.removed"), false, cx);
-            }
-            Err(error) => self.show_error(error, cx),
+        if self.dialog_busy {
+            return;
         }
+        let paths = self.paths.clone();
+        self.dialog_busy = true;
+        cx.notify();
+        spawn_task(
+            cx,
+            move || modrinth::remove_file(&paths, &instance_id, &project_type, &filename),
+            move |this, result, cx| {
+                this.dialog_busy = false;
+                match result {
+                    Ok(()) => {
+                        this.dialog = None;
+                        this.show_toast(this.t("toast.removed"), false, cx);
+                    }
+                    Err(error) => this.show_error(error, cx),
+                }
+            },
+        );
     }
 }
 
@@ -1876,8 +2430,14 @@ fn install_instance_blocking(
 ) -> crate::core::Result<()> {
     let cancel = Arc::new(AtomicBool::new(false));
     let report = |progress: Arc<Mutex<InstallProgress>>| {
-        move |value: InstallProgress| {
-            *progress.lock().unwrap() = value;
+        move |mut value: InstallProgress| {
+            let mut slot = progress.lock().unwrap();
+            // Loader output arrives between progress events; keep the most
+            // recent line rather than clearing it on the next percentage tick.
+            if value.message.is_none() {
+                value.message = slot.message.clone();
+            }
+            *slot = value;
         }
     };
 
@@ -1891,7 +2451,13 @@ fn install_instance_blocking(
     )?;
 
     if record.loader.kind != LoaderType::Vanilla {
-        let loader_id = install::install_loader(
+        let output_progress = Arc::clone(&progress);
+        let on_output = move |line: &str| {
+            let mut value = output_progress.lock().unwrap();
+            value.phase = InstallPhase::Loader;
+            value.message = Some(line.to_string());
+        };
+        let loader_id = install::install_loader_with_output(
             paths,
             install::LoaderInstallRequest {
                 minecraft_version: &record.version_id,
@@ -1902,6 +2468,7 @@ fn install_instance_blocking(
             },
             Arc::clone(&cancel),
             report(Arc::clone(&progress)),
+            on_output,
         )?;
         instances::set_launch_version_id(paths, &record.id, loader_id)?;
     }
@@ -2009,92 +2576,120 @@ impl Render for Yuhina {
         let lang = self.lang;
         let nav_items = navigation_items(lang);
         let selected = page.id();
-        let title = self.t(page.title_key());
-        let is_dark = self.dark;
-        // The compact window class cannot fit the two secondary destinations
-        // beside the theme, language and title. Keep them reachable in one
-        // overflow menu instead of letting the bar clip them.
-        let scale = f32::from(window.rem_size()) / BASE_PX;
-        let viewport_width = f32::from(window.viewport_size().width) / scale;
-        let compact_actions = viewport_width < 600.;
+        let title = self.window_title_text();
+        if self.window_title != title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
+        let class = WindowWidthClass::of(f32::from(window.viewport_size().width));
+        let compact = class == WindowWidthClass::Compact;
+        let expanded = matches!(
+            class,
+            WindowWidthClass::Expanded | WindowWidthClass::Large | WindowWidthClass::ExtraLarge
+        );
+        let detail = page == Page::Instances
+            && self
+                .selected_instance
+                .as_ref()
+                .is_some_and(|id| self.instances.iter().any(|item| &item.record.id == id));
 
         let content = pages::render(self, window, cx);
-
-        let theme_icon = if is_dark { "light_mode" } else { "dark_mode" };
-        let theme_label = if is_dark {
-            self.t("topbar.theme_light")
+        let content: AnyElement = if self.reduce_motion {
+            content
         } else {
-            self.t("topbar.theme_dark")
-        };
-        let language_label = if lang == Language::ZhCn {
-            self.t("topbar.language_en")
-        } else {
-            self.t("topbar.language_zh")
+            let key = SharedString::from(format!(
+                "page-fade-{}-{}",
+                page.id(),
+                self.selected_instance.as_deref().unwrap_or("list")
+            ));
+            div()
+                .child(content)
+                .with_animation(
+                    key,
+                    Animation::new(Duration::from_millis(140)),
+                    |element, delta| element.opacity(0.55 + 0.45 * delta),
+                )
+                .into_any_element()
         };
 
-        let mut actions: Vec<AnyElement> = vec![
-            IconButton::new("toggle-theme", material_icon(theme_icon, 22.0), theme_label)
-                .on_click(cx.listener(|this, _, window, cx| this.toggle_theme(window, cx)))
-                .into_any_element(),
-            IconButton::new(
-                "toggle-language",
-                material_icon("translate", 22.0),
-                language_label,
+        let activity_active = self
+            .running
+            .values()
+            .any(|game| matches!(game.status, GameStatus::Starting | GameStatus::Running))
+            || self.installs.values().any(|task| !task.finished);
+
+        let activity_button = |cx: &mut Context<Self>| {
+            let button = IconButton::new(
+                "open-activity",
+                material_icon("monitoring", 24.0),
+                self.t("nav.activity"),
             )
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_language(cx)))
-            .into_any_element(),
-        ];
+            .on_click(cx.listener(|this, _, _, cx| this.set_page(Page::Activity, cx)));
+            if activity_active {
+                Badge::small("activity-badge")
+                    .color(BadgeColor::Info)
+                    .visible(true)
+                    .anchor(button)
+                    .into_any_element()
+            } else {
+                button.into_any_element()
+            }
+        };
 
-        if compact_actions {
+        let mut actions: Vec<AnyElement> = Vec::new();
+        if compact {
             let items = [
                 MaterialMenuItem::new(self.t("nav.activity"))
                     .leading(material_icon("monitoring", 20.0))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.overflow_open = false;
+                        this.menu_open = None;
                         this.set_page(Page::Activity, cx);
                     })),
                 MaterialMenuItem::new(self.t("nav.settings"))
                     .leading(material_icon("settings", 20.0))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.overflow_open = false;
+                        this.menu_open = None;
                         this.set_page(Page::Settings, cx);
                     })),
             ];
-            let trigger = IconButton::new(
-                "topbar-more",
-                material_icon("more_vert", 22.0),
-                self.t("topbar.more"),
-            )
-            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                if matches!(event, ClickEvent::Keyboard(_)) {
-                    this.overflow_open = !this.overflow_open;
+            let trigger = MaterialButton::new("topbar-more")
+                .variant(ButtonVariant::Text)
+                .button_size(ButtonSize::Small)
+                .icon(material_icon("more_vert", 20.0))
+                .child(self.t("topbar.more"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.menu_open = if this.menu_open.as_deref() == Some("topbar") {
+                        None
+                    } else {
+                        Some("topbar".to_string())
+                    };
                     cx.notify();
-                }
-            }));
+                }));
+            let trigger = if activity_active {
+                Badge::small("topbar-more-badge")
+                    .color(BadgeColor::Info)
+                    .visible(true)
+                    .anchor(trigger)
+                    .into_any_element()
+            } else {
+                trigger.into_any_element()
+            };
             let menu = MaterialMenu::new("topbar-more-menu").items(items);
             actions.push(
                 MenuPopup::new("topbar-more-popup", trigger, menu)
-                    .open(self.overflow_open)
+                    .open(self.menu_open.as_deref() == Some("topbar"))
                     .on_open_change(cx.listener(|this, open: &bool, _, cx| {
-                        this.overflow_open = *open;
+                        this.menu_open = open.then(|| "topbar".to_string());
                         cx.notify();
                     }))
                     .into_any_element(),
             );
         } else {
-            actions.push(
-                IconButton::new(
-                    "open-activity",
-                    material_icon("monitoring", 22.0),
-                    self.t("nav.activity"),
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.set_page(Page::Activity, cx)))
-                .into_any_element(),
-            );
+            actions.push(activity_button(cx));
             actions.push(
                 IconButton::new(
                     "open-settings",
-                    material_icon("settings", 22.0),
+                    material_icon("settings", 24.0),
                     self.t("nav.settings"),
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.set_page(Page::Settings, cx)))
@@ -2102,44 +2697,29 @@ impl Render for Yuhina {
             );
         }
 
-        let top_bar = TopAppBar::new("top-bar", TopAppBarVariant::Small)
-            .title(title)
-            .container(ColorRole::SURFACE)
-            .navigation_icon(logo());
-
-        let compact = viewport_width < 600.;
-        let mut primary = Some(
-            Fab::new(
-                "new-instance-fab",
-                material_icon("add", 24.0),
-                self.t("instances.new"),
+        let navigation_icon = if detail {
+            IconButton::new(
+                "detail-back",
+                material_icon("arrow_back", 24.0),
+                self.t("common.back"),
             )
-            .on_click(cx.listener(|this, _, _, cx| this.open_create_dialog(cx))),
-        );
+            .on_click(cx.listener(|this, _, _, cx| this.back_to_instances(cx)))
+            .into_any_element()
+        } else {
+            logo().into_any_element()
+        };
+        let top_bar = TopAppBar::new("top-bar", TopAppBarVariant::Small)
+            .container(ColorRole::SURFACE)
+            .navigation_icon(navigation_icon)
+            .actions(actions);
 
-        let expanded = viewport_width >= 840.;
         let rail_width = if expanded { 220. } else { 96. };
         let main = if compact {
-            div()
-                .w(px(viewport_width))
-                .h_full()
-                .min_w_0()
-                .child(content)
+            div().w_full().h_full().min_w_0().child(content)
         } else {
-            let mut rail = NavigationRail::new("main-navigation", self.t("nav.landmark"))
-                .items(nav_items)
-                .selected(selected)
-                .expanded(expanded)
-                .container(ColorRole::SURFACE)
-                .on_change(cx.listener(|this, id: &SharedString, _, cx| {
-                    this.set_page(Page::from_id(id.as_ref()), cx);
-                }));
-            if let Some(fab) = primary.take() {
-                rail = rail.fab(fab);
-            }
             div()
                 .relative()
-                .w(px(viewport_width))
+                .w_full()
                 .h_full()
                 .min_h_0()
                 .min_w_0()
@@ -2152,7 +2732,17 @@ impl Render for Yuhina {
                         .h_full()
                         .min_w_0()
                         .overflow_hidden()
-                        .child(rail.expanded_width(rail_width)),
+                        .child(
+                            NavigationRail::new("main-navigation", self.t("nav.landmark"))
+                                .items(nav_items)
+                                .selected(selected)
+                                .expanded(expanded)
+                                .container(ColorRole::SURFACE)
+                                .expanded_width(rail_width)
+                                .on_change(cx.listener(|this, id: &SharedString, _, cx| {
+                                    this.set_page(Page::from_id(id.as_ref()), cx);
+                                })),
+                        ),
                 )
                 .child(
                     div()
@@ -2167,49 +2757,54 @@ impl Render for Yuhina {
         };
 
         let compact_bar = compact.then(|| {
-            let bar = NavigationBar::new("main-navigation", self.t("nav.landmark"))
-                .items(navigation_items(lang))
-                .selected(selected)
-                .layout(NavItemLayout::Vertical)
-                .on_change(cx.listener(|this, id: &SharedString, _, cx| {
-                    this.set_page(Page::from_id(id.as_ref()), cx);
-                }));
-            // The bar's lane is wider than some compact windows; clip the bar
-            // rather than letting it widen the page content.
             div()
                 .w_full()
                 .min_w_0()
                 .flex_shrink_0()
                 .overflow_hidden()
-                .child(div().w_full().min_w_0().child(bar))
-        });
-        let compact_fab = primary.map(|fab| {
-            div()
-                .absolute()
-                .bottom(px(96.))
-                .right(px(16.))
-                .child(fab)
-                .into_any_element()
+                .child(
+                    div().w_full().min_w_0().child(
+                        NavigationBar::new("main-navigation", self.t("nav.landmark"))
+                            .items(navigation_items(lang))
+                            .selected(selected)
+                            .layout(NavItemLayout::Vertical)
+                            .on_change(cx.listener(|this, id: &SharedString, _, cx| {
+                                this.set_page(Page::from_id(id.as_ref()), cx);
+                            })),
+                    ),
+                )
         });
 
-        let snackbar = self.toast.clone().map(|toast| {
+        let snackbar = self.toasts.front().cloned().map(|toast| {
             let duration = if toast.error {
-                SnackbarDuration::Long
+                SnackbarDuration::Indefinite
             } else {
                 SnackbarDuration::Short
             };
-            div().absolute().left(px(24.)).bottom(px(24.)).child(
-                Snackbar::new("toast", toast.text)
-                    .open(true)
-                    .duration(duration)
-                    .close(
-                        i18n::tr(lang, "common.close"),
-                        cx.listener(|this, _, _, cx| {
-                            this.toast = None;
-                            cx.notify();
-                        }),
-                    ),
-            )
+            let mut bar = Snackbar::new("toast", toast.text.clone())
+                .open(true)
+                .duration(duration)
+                .position(SnackbarPosition::Center)
+                .close(
+                    i18n::tr(lang, "common.close"),
+                    cx.listener(|this, _, _, cx| this.dismiss_toast(cx)),
+                );
+            if let Some((label, _)) = toast.action {
+                bar = bar.action(
+                    i18n::tr(lang, label),
+                    cx.listener(|this, _, _, cx| this.run_toast_action(cx)),
+                );
+            }
+            div()
+                .absolute()
+                .left(px(0.))
+                .right(px(0.))
+                .bottom(px(if compact { 96. } else { 24. }))
+                .px(px(24.))
+                .flex()
+                .justify_center()
+                .child(div().w_full().max_w(px(672.)).child(bar))
+                .into_any_element()
         });
 
         div()
@@ -2221,18 +2816,7 @@ impl Render for Yuhina {
             .overflow_hidden()
             .bg(color(ColorRole::SURFACE))
             .text_color(color(ColorRole::ON_SURFACE))
-            .font_family("Roboto")
             .child(div().w_full().min_w_0().child(top_bar))
-            .child(
-                div()
-                    .absolute()
-                    .right(px(16.))
-                    .top(px(16.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .children(actions),
-            )
             .child(
                 div()
                     .flex_1()
@@ -2243,7 +2827,6 @@ impl Render for Yuhina {
                     .child(main),
             )
             .children(compact_bar)
-            .children(compact_fab)
             .children(dialog)
             .children(snackbar)
     }
@@ -2283,4 +2866,13 @@ fn logo() -> impl IntoElement {
                 .h(px(24.))
                 .text_color(color(ColorRole::PRIMARY)),
         )
+}
+
+/// The offline account rules, shared by the dialog and its inline error.
+fn valid_offline_name(name: &str) -> bool {
+    let name = name.trim();
+    (3..=16).contains(&name.chars().count())
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
 }

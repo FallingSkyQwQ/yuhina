@@ -1,5 +1,21 @@
 use super::*;
+use crate::core::accounts::AccountKind;
 use crate::core::instances::{self, InstanceRecord, MemoryMode};
+
+// 8pt rhythm and the Material shape scale. These are `rem`, so the whole
+// layout follows the text-scale preference: at 200% the gutters, row padding,
+// icon tiles and card padding grow with the type instead of clipping it.
+const SPACE_XS: Rems = rem(4.);
+const SPACE_S: Rems = rem(8.);
+const SPACE_M: Rems = rem(12.);
+const SPACE_L: Rems = rem(16.);
+const SPACE_XL: Rems = rem(24.);
+const SPACE_2XL: Rems = rem(32.);
+const RADIUS_ROW: Rems = rem(16.);
+const RADIUS_CARD: Rems = rem(24.);
+const RADIUS_HERO: Rems = rem(32.);
+const PAGE_MAX_WIDTH: Rems = rem(1120.);
+const PAGE_GUTTER: Rems = rem(32.);
 
 pub fn render(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
     match app.page {
@@ -30,32 +46,33 @@ fn type_role<E: Styled>(element: E, role: TypeRole) -> E {
     type_scale(element, role.scale())
 }
 
-fn page_frame(window: &Window, header: AnyElement, body: AnyElement) -> AnyElement {
-    // Let the suite's flex content define the available width. Computing a
-    // pixel width from `viewport_size()` mixes physical pixels with logical
-    // `px()` units on scaled displays and shifts/clips the column. A
-    // left-aligned, max-width column inside a clipped scroll frame is stable
-    // at every DPI.
-    let compact = f32::from(window.viewport_size().width) < 600.;
+fn width_class(window: &Window) -> WindowWidthClass {
+    WindowWidthClass::of(f32::from(window.viewport_size().width))
+}
+
+fn page_frame(app: &Yuhina, window: &Window, header: AnyElement, body: AnyElement) -> AnyElement {
+    let compact = width_class(window) == WindowWidthClass::Compact;
+    let scroll = app.page_scroll(app.page);
     div()
-        .id("page-scroll")
+        .id(format!("page-scroll-{}", app.page.id()))
         .size_full()
         .min_w_0()
         .overflow_y_scroll()
         .overflow_x_hidden()
+        .track_scroll(&scroll)
         .child(
             div().w_full().min_w_0().flex().flex_col().child(
                 div()
                     .w_full()
-                    .max_w(px(1120.))
+                    .max_w(PAGE_MAX_WIDTH)
                     .min_w_0()
-                    .px(px(32.))
-                    .pt(px(32.))
-                    .pb(px(if compact { 160. } else { 32. }))
+                    .px(if compact { SPACE_XL } else { PAGE_GUTTER })
+                    .pt(SPACE_2XL)
+                    .pb(SPACE_2XL)
                     .flex()
                     .flex_col()
                     .items_stretch()
-                    .gap(px(24.))
+                    .gap(SPACE_XL)
                     .child(header)
                     .child(body),
             ),
@@ -63,6 +80,9 @@ fn page_frame(window: &Window, header: AnyElement, body: AnyElement) -> AnyEleme
         .into_any_element()
 }
 
+/// The one heading for a page. The top app bar deliberately carries no title:
+/// the window title names the page/instance, and the content owns the visible
+/// H1. This removes the duplicated title the audit found on six pages.
 fn page_header(
     app: &Yuhina,
     title_key: &str,
@@ -74,13 +94,13 @@ fn page_header(
         .flex()
         .items_end()
         .justify_between()
-        .gap(px(16.))
+        .gap(SPACE_L)
         .flex_wrap()
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(SPACE_XS)
                 .flex_1()
                 .min_w_0()
                 .child(
@@ -99,17 +119,17 @@ fn page_header(
                 .flex()
                 .flex_wrap()
                 .justify_end()
-                .gap(px(8.))
+                .gap(SPACE_S)
                 .child(actions)
         }))
         .into_any_element()
 }
 
-fn panel() -> Div {
+fn card_surface() -> Div {
     div()
-        .rounded(px(24.))
+        .rounded(RADIUS_CARD)
         .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
-        .p(px(20.))
+        .p(SPACE_XL)
 }
 
 fn section_label(app: &Yuhina, key: &str) -> Div {
@@ -118,7 +138,7 @@ fn section_label(app: &Yuhina, key: &str) -> Div {
         .child(app.t(key))
 }
 
-fn muted(text: impl Into<SharedString>) -> Div {
+pub(super) fn muted(text: impl Into<SharedString>) -> Div {
     type_role(div(), TypeRole::BodySmall)
         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
         .child(text.into())
@@ -128,13 +148,11 @@ fn body_text(text: impl Into<SharedString>) -> Div {
     type_role(div(), TypeRole::BodyMedium).child(text.into())
 }
 
-fn chip(text: impl Into<SharedString>, tone: ColorRole, text_role: ColorRole) -> Div {
-    type_role(div(), TypeRole::LabelMedium)
-        .px(px(10.))
-        .py(px(4.))
-        .rounded(px(999.))
-        .bg(color(tone))
-        .text_color(color(text_role))
+/// The primary identifying line of a row. BodyMedium, not BodySmall: the
+/// version/loader/memory tuple is what the user scans for.
+fn meta_text(text: impl Into<SharedString>) -> Div {
+    type_role(div(), TypeRole::BodyMedium)
+        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
         .child(text.into())
 }
 
@@ -154,94 +172,186 @@ fn playtime_text(app: &Yuhina, millis: u64) -> String {
     }
 }
 
-fn error_panel(app: &Yuhina, message: &str, retry: Option<AnyElement>) -> AnyElement {
-    div()
-        .w_full()
-        .rounded(px(24.))
-        .bg(color(ColorRole::ERROR_CONTAINER))
-        .text_color(color(ColorRole::ON_ERROR_CONTAINER))
-        .p(px(20.))
-        .flex()
-        .flex_col()
-        .gap(px(12.))
-        .child(type_role(div(), TypeRole::TitleSmall).child(app.t("common.error")))
-        .child(body_text(message.to_string()))
-        .child(muted(app.t("common.offline_hint")).text_color(color(ColorRole::ON_ERROR_CONTAINER)))
-        .children(retry)
+fn instance_meta(app: &Yuhina, record: &InstanceRecord) -> String {
+    app.t("instances.row_meta")
+        .replace("{version}", &record.version_id)
+        .replace("{loader}", &loader_text(app, &record.loader))
+        .replace(
+            "{mb}",
+            &instances::effective_memory_mb(&app.paths, record).to_string(),
+        )
+}
+
+/// Show only exceptional states. "Installed" is the normal case and stays
+/// quiet; Running is the single green status, Not installed the warning.
+fn status_badge(app: &Yuhina, running: bool, installed: bool) -> Option<AnyElement> {
+    if running {
+        return Some(
+            status_chip(StatusKind::Success)
+                .child(app.t("instances.running"))
+                .into_any_element(),
+        );
+    }
+    if !installed {
+        return Some(
+            status_chip(StatusKind::Warning)
+                .child(app.t("instances.not_installed"))
+                .into_any_element(),
+        );
+    }
+    None
+}
+
+fn active_badge(app: &Yuhina) -> AnyElement {
+    Badge::large("account-active-badge", app.t("accounts.active"))
+        .color(BadgeColor::Secondary)
         .into_any_element()
 }
 
-fn loading_panel(app: &Yuhina, label_key: &str) -> AnyElement {
+pub(super) fn error_panel(
+    app: &Yuhina,
+    id: &'static str,
+    message: &str,
+    retry: Option<AnyElement>,
+) -> AnyElement {
+    let mut banner = notice_banner(id, NoticeKind::Danger, message.to_string());
+    if let Some(retry) = retry {
+        banner = banner.child(retry);
+    }
+    let _ = app;
+    banner.into_any_element()
+}
+
+pub(super) fn loading_panel(app: &Yuhina, id: &'static str, label_key: &str) -> AnyElement {
     div()
         .w_full()
-        .rounded(px(24.))
+        .rounded(RADIUS_CARD)
         .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
-        .p(px(20.))
+        .p(SPACE_XL)
         .flex()
-        .flex_col()
-        .gap(px(12.))
+        .items_center()
+        .gap(SPACE_M)
+        .child(LoadingIndicator::new(id, app.t(label_key)).size(24.))
         .child(body_text(app.t(label_key)))
-        .child(
-            LinearProgress::new("inline-loading", app.t("common.loading"))
-                .value(None::<f32>)
-                .thickness(px(4.)),
-        )
         .into_any_element()
 }
 
 fn empty_state(
     app: &Yuhina,
+    id: &'static str,
     icon: &str,
     title_key: &str,
     body_key: &str,
     action: Option<AnyElement>,
 ) -> AnyElement {
-    div()
-        .w_full()
-        .py(px(48.))
-        .flex()
-        .flex_col()
-        .items_center()
-        .gap(px(12.))
+    MaterialCard::new(id, CardVariant::Filled)
+        .p(SPACE_XL)
         .child(
             div()
-                .size(px(64.))
-                .rounded(px(22.))
-                .bg(color(ColorRole::SECONDARY_CONTAINER))
+                .w_full()
                 .flex()
+                .flex_col()
                 .items_center()
-                .justify_center()
-                .text_color(color(ColorRole::ON_SECONDARY_CONTAINER))
-                .child(material_icon(icon, 30.0)),
+                .gap(SPACE_M)
+                .child(
+                    div()
+                        .size(rem(64.))
+                        .rounded(RADIUS_CARD)
+                        .bg(color(ColorRole::SECONDARY_CONTAINER))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(color(ColorRole::ON_SECONDARY_CONTAINER))
+                        .child(material_icon(icon, 32.0)),
+                )
+                .child(
+                    type_scale(div(), TypeRole::HeadlineSmall.emphasized()).child(app.t(title_key)),
+                )
+                .child(
+                    type_role(div(), TypeRole::BodyMedium)
+                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                        .text_center()
+                        .child(app.t(body_key)),
+                )
+                .children(action),
         )
-        .child(type_scale(div(), TypeRole::HeadlineSmall.emphasized()).child(app.t(title_key)))
-        .child(
-            type_role(div(), TypeRole::BodyMedium)
-                .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                .child(app.t(body_key)),
-        )
-        .children(action)
         .into_any_element()
 }
 
-fn grid() -> Div {
-    div().w_full().flex().flex_wrap().gap(px(16.))
+/// Equal-column card grid. The column count follows the window class, never
+/// the item count, and short rows are padded with empty cells so the last card
+/// never grows to fill the line.
+fn card_grid(items: Vec<AnyElement>, columns: usize) -> Div {
+    let columns = columns.max(1);
+    let mut grid = div().w_full().flex().flex_col().gap(SPACE_L);
+    let mut items = items.into_iter().peekable();
+    while items.peek().is_some() {
+        let mut cells: Vec<AnyElement> = Vec::with_capacity(columns);
+        for _ in 0..columns {
+            match items.next() {
+                Some(item) => cells.push(div().flex_1().min_w_0().child(item).into_any_element()),
+                None => cells.push(div().flex_1().min_w_0().into_any_element()),
+            }
+        }
+        grid = grid.child(
+            div()
+                .w_full()
+                .flex()
+                .items_stretch()
+                .gap(SPACE_L)
+                .children(cells),
+        );
+    }
+    grid
 }
 
-fn card_shell() -> Div {
-    div()
-        .flex_1()
-        .min_w(px(260.))
-        .rounded(px(24.))
-        .bg(color(ColorRole::SURFACE_CONTAINER))
-        .p(px(20.))
-        .flex()
-        .flex_col()
-        .gap(px(12.))
+fn columns_for(class: WindowWidthClass) -> usize {
+    match class {
+        WindowWidthClass::Compact => 1,
+        WindowWidthClass::Medium | WindowWidthClass::Expanded => 2,
+        WindowWidthClass::Large | WindowWidthClass::ExtraLarge => 3,
+    }
 }
 
 fn progress_value(fraction: f32) -> f32 {
     fraction.clamp(0.0, 1.0)
+}
+
+/// A list row and its trailing action share one surface: the row itself is the
+/// navigation target, the button stays a separate focus stop.
+fn row_with_action(row: ListItem, action: Option<AnyElement>) -> AnyElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .rounded(RADIUS_ROW)
+        .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(row.container(ColorRole::SURFACE_CONTAINER_LOW)),
+        )
+        .children(action.map(|action| div().flex_shrink_0().pr(SPACE_S).child(action)))
+        .into_any_element()
+}
+
+fn menu_trigger(id: String, label: &'static str, cx: &mut Context<Yuhina>) -> IconButton {
+    IconButton::new(id.clone(), material_icon("more_vert", 24.0), label).on_click(cx.listener(
+        move |this, _, _, cx| {
+            this.menu_open = if this.menu_open.as_ref() == Some(&id) {
+                None
+            } else {
+                Some(id.clone())
+            };
+            cx.notify();
+        },
+    ))
+}
+
+fn menu_open(app: &Yuhina, id: &str) -> bool {
+    app.menu_open.as_deref() == Some(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -253,9 +363,11 @@ fn home(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyE
         .accounts
         .iter()
         .find(|account| account.active)
-        .map(|account| account.name.clone())
-        .unwrap_or_else(|| "Steve".to_string());
-    let greeting = app.t("home.greeting").replace("{name}", &name);
+        .map(|account| account.name.clone());
+    let greeting = match name {
+        Some(name) => app.t("home.greeting").replace("{name}", &name),
+        None => app.t("home.greeting_guest").to_string(),
+    };
 
     let recent: Vec<_> = app.instances.iter().take(3).cloned().collect();
     let recent_cards: Vec<AnyElement> = recent
@@ -267,19 +379,30 @@ fn home(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyE
             let play_id = id.clone();
             let installed = summary.installed;
             let running = app.is_game_running(&id);
-            card_shell()
+            let mut card = MaterialCard::new(format!("recent-{id}"), CardVariant::Filled)
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.open_instance(open_id.clone(), cx)),
+                )
+                .p(SPACE_L)
+                .h_full();
+            let content = div()
+                .flex()
+                .flex_col()
+                .gap(SPACE_M)
+                .h_full()
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
+                        .gap(SPACE_M)
                         .child(
                             div()
-                                .size(px(44.))
-                                .rounded(px(14.))
+                                .size(rem(44.))
+                                .rounded(RADIUS_ROW)
                                 .bg(color(ColorRole::TERTIARY_CONTAINER))
                                 .text_color(color(ColorRole::ON_TERTIARY_CONTAINER))
                                 .flex()
+                                .flex_shrink_0()
                                 .items_center()
                                 .justify_center()
                                 .child(material_icon("sports_esports", 24.0)),
@@ -292,13 +415,10 @@ fn home(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyE
                                 .min_w_0()
                                 .child(
                                     type_role(div(), TypeRole::TitleMedium)
+                                        .truncate()
                                         .child(record.name.clone()),
                                 )
-                                .child(muted(format!(
-                                    "{} · {}",
-                                    record.version_id,
-                                    loader_text(app, &record.loader)
-                                ))),
+                                .child(meta_text(instance_meta(app, &record)).truncate()),
                         ),
                 )
                 .child(
@@ -306,63 +426,33 @@ fn home(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyE
                         .flex()
                         .items_center()
                         .justify_between()
+                        .gap(SPACE_S)
+                        .children(status_badge(app, running, installed))
                         .child(if running {
-                            chip(
-                                app.t("instances.running"),
-                                ColorRole::TERTIARY_CONTAINER,
-                                ColorRole::ON_TERTIARY_CONTAINER,
-                            )
-                        } else if installed {
-                            chip(
-                                app.t("instances.installed"),
-                                ColorRole::SECONDARY_CONTAINER,
-                                ColorRole::ON_SECONDARY_CONTAINER,
-                            )
-                        } else {
-                            chip(
-                                app.t("instances.not_installed"),
-                                ColorRole::SURFACE_CONTAINER_HIGHEST,
-                                ColorRole::ON_SURFACE_VARIANT,
-                            )
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .gap(px(8.))
-                                .child(
-                                    MaterialButton::new(format!("home-open-{id}"))
-                                        .variant(ButtonVariant::Text)
-                                        .button_size(ButtonSize::Small)
-                                        .child(app.t("common.details"))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.open_instance(open_id.clone(), cx)
-                                        })),
+                            MaterialButton::new(format!("home-stop-{id}"))
+                                .variant(ButtonVariant::Tonal)
+                                .button_size(ButtonSize::Small)
+                                .icon(material_icon("stop", 20.0))
+                                .child(app.t("instances.stop"))
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.stop_game(&play_id, cx)),
                                 )
-                                .child(if running {
-                                    MaterialButton::new(format!("home-stop-{id}"))
-                                        .variant(ButtonVariant::Tonal)
-                                        .button_size(ButtonSize::Small)
-                                        .icon(material_icon("stop", 18.0))
-                                        .child(app.t("instances.stop"))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.stop_game(&play_id, cx)
-                                        }))
-                                        .into_any_element()
-                                } else {
-                                    MaterialButton::new(format!("home-play-{id}"))
-                                        .variant(ButtonVariant::Filled)
-                                        .button_size(ButtonSize::Small)
-                                        .icon(material_icon("play_arrow", 18.0))
-                                        .child(app.t("home.play"))
-                                        .disabled(!installed)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.launch_instance(play_id.clone(), None, cx)
-                                        }))
-                                        .into_any_element()
-                                }),
-                        ),
-                )
-                .into_any_element()
+                                .into_any_element()
+                        } else {
+                            MaterialButton::new(format!("home-play-{id}"))
+                                .variant(ButtonVariant::Tonal)
+                                .button_size(ButtonSize::Small)
+                                .icon(material_icon("play_arrow", 20.0))
+                                .child(app.t("home.play"))
+                                .disabled(!installed)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.launch_instance(play_id.clone(), None, cx)
+                                }))
+                                .into_any_element()
+                        }),
+                );
+            card = card.child(content);
+            card.into_any_element()
         })
         .collect();
 
@@ -373,50 +463,55 @@ fn home(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyE
         .take(4)
         .map(|item| {
             let url = item.url.clone();
-            div()
-                .flex_1()
-                .min_w(px(260.))
-                .rounded(px(20.))
-                .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
-                .p(px(16.))
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(type_role(div(), TypeRole::TitleSmall).child(item.title.clone()))
-                .child(muted(item.date.clone()))
+            MaterialCard::new(format!("news-{}", item.id), CardVariant::Filled)
+                .p(SPACE_L)
                 .child(
-                    type_role(div(), TypeRole::BodySmall)
-                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                        .child(item.text.clone()),
-                )
-                .child(
-                    MaterialButton::new(format!("news-{}", item.id))
-                        .variant(ButtonVariant::Text)
-                        .button_size(ButtonSize::ExtraSmall)
-                        .icon(material_icon("open_in_new", 16.0))
-                        .child(app.t("home.read_more"))
-                        .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_S)
+                        .child(
+                            type_role(div(), TypeRole::TitleSmall)
+                                .line_clamp(2)
+                                .child(item.title.clone()),
+                        )
+                        .child(muted(item.date.clone()))
+                        .child(
+                            type_role(div(), TypeRole::BodyMedium)
+                                .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                                .line_clamp(2)
+                                .child(item.text.clone()),
+                        )
+                        .child(
+                            MaterialButton::new(format!("news-{}", item.id))
+                                .variant(ButtonVariant::Text)
+                                .button_size(ButtonSize::ExtraSmall)
+                                .icon(material_icon("open_in_new", 20.0))
+                                .child(app.t("home.read_more"))
+                                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
+                        ),
                 )
                 .into_any_element()
         })
         .collect();
 
     let hero = div()
-        .rounded(px(32.))
+        .rounded(RADIUS_HERO)
         .bg(color(ColorRole::PRIMARY_CONTAINER))
         .text_color(color(ColorRole::ON_PRIMARY_CONTAINER))
-        .p(px(32.))
+        .p(SPACE_2XL)
         .flex()
         .flex_col()
-        .gap(px(12.))
+        .gap(SPACE_M)
         .child(type_scale(div(), TypeRole::LabelLarge.emphasized()).child(app.t("app.tagline")))
         .child(type_scale(div(), TypeRole::DisplaySmall.emphasized()).child(greeting))
         .child(type_role(div(), TypeRole::BodyLarge).child(app.t("home.subtitle")))
         .child(
             div()
                 .flex()
-                .gap(px(12.))
-                .mt(px(8.))
+                .flex_wrap()
+                .gap(SPACE_M)
+                .mt(SPACE_S)
                 .child(
                     MaterialButton::new("home-new-instance")
                         .variant(ButtonVariant::Filled)
@@ -430,7 +525,7 @@ fn home(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyE
                     let id = recent[0].record.id.clone();
                     row.child(
                         MaterialButton::new("home-play-latest")
-                            .variant(ButtonVariant::Filled)
+                            .variant(ButtonVariant::Tonal)
                             .icon(material_icon("play_arrow", 20.0))
                             .child(app.t("home.play"))
                             .disabled(!recent[0].installed)
@@ -444,7 +539,7 @@ fn home(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyE
     let recent_section = div()
         .flex()
         .flex_col()
-        .gap(px(12.))
+        .gap(SPACE_M)
         .child(
             div()
                 .flex()
@@ -460,7 +555,7 @@ fn home(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyE
                 ),
         )
         .child(if app.loading.instances && recent_cards.is_empty() {
-            loading_panel(app, "instances.loading")
+            loading_panel(app, "home-instances-loading", "instances.loading")
         } else if let Some(error) = app
             .instance_error
             .as_ref()
@@ -468,64 +563,74 @@ fn home(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyE
         {
             let retry = MaterialButton::new("home-instances-retry")
                 .variant(ButtonVariant::Text)
-                .icon(material_icon("refresh", 18.0))
+                .icon(material_icon("refresh", 20.0))
                 .child(app.t("common.retry"))
                 .on_click(cx.listener(|this, _, _, cx| this.refresh_instances(cx)))
                 .into_any_element();
-            error_panel(app, error, Some(retry))
+            error_panel(app, "home-instances-error", error, Some(retry))
         } else if recent_cards.is_empty() {
-            panel()
-                .child(empty_state(
-                    app,
-                    "grid_view",
-                    "home.no_instances",
-                    "home.no_instances_body",
-                    Some(
-                        MaterialButton::new("home-create-empty")
-                            .variant(ButtonVariant::Filled)
-                            .icon(material_icon("add", 20.0))
-                            .child(app.t("home.create"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_create_dialog(cx);
-                            }))
-                            .into_any_element(),
-                    ),
-                ))
-                .into_any_element()
+            empty_state(
+                app,
+                "home-empty",
+                "grid_view",
+                "home.no_instances",
+                "home.no_instances_body",
+                Some(
+                    MaterialButton::new("home-create-empty")
+                        .variant(ButtonVariant::Text)
+                        .icon(material_icon("add", 20.0))
+                        .child(app.t("home.create"))
+                        .on_click(cx.listener(|this, _, _, cx| this.open_create_dialog(cx)))
+                        .into_any_element(),
+                ),
+            )
         } else {
-            grid().children(recent_cards).into_any_element()
+            card_grid(recent_cards, columns_for(width_class(window))).into_any_element()
         });
 
     let news_section = div()
         .flex()
         .flex_col()
-        .gap(px(12.))
+        .gap(SPACE_M)
         .child(section_label(app, "home.news"))
         .child(if app.loading.news && news_cards.is_empty() {
-            loading_panel(app, "home.news_loading")
+            loading_panel(app, "home-news-loading", "home.news_loading")
         } else if let Some(error) = app.news_error.as_ref().filter(|_| news_cards.is_empty()) {
             let retry = MaterialButton::new("news-retry")
                 .variant(ButtonVariant::Text)
-                .icon(material_icon("refresh", 18.0))
+                .icon(material_icon("refresh", 20.0))
                 .child(app.t("common.retry"))
                 .on_click(cx.listener(|this, _, _, cx| this.refresh_news(cx, true)))
                 .into_any_element();
-            error_panel(app, error, Some(retry))
+            error_panel(app, "home-news-error", error, Some(retry))
         } else if news_cards.is_empty() {
-            panel()
-                .child(muted(app.t("home.news_empty")))
-                .into_any_element()
+            empty_state(
+                app,
+                "home-news-empty",
+                "newspaper",
+                "common.empty",
+                "home.news_empty",
+                Some(
+                    MaterialButton::new("home-news-retry")
+                        .variant(ButtonVariant::Text)
+                        .icon(material_icon("refresh", 20.0))
+                        .child(app.t("common.retry"))
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_news(cx, true)))
+                        .into_any_element(),
+                ),
+            )
         } else {
-            grid().children(news_cards).into_any_element()
+            card_grid(news_cards, columns_for(width_class(window))).into_any_element()
         });
 
     page_frame(
+        app,
         window,
         hero.into_any_element(),
         div()
             .flex()
             .flex_col()
-            .gap(px(24.))
+            .gap(SPACE_XL)
             .child(recent_section)
             .child(news_section)
             .into_any_element(),
@@ -547,14 +652,18 @@ fn instances_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina
     let actions = Some(
         div()
             .flex()
-            .gap(px(8.))
+            .flex_wrap()
+            .gap(SPACE_S)
             .child(
                 MaterialButton::new("instances-import")
-                    .variant(ButtonVariant::Tonal)
+                    .variant(ButtonVariant::Text)
                     .icon(material_icon("download", 20.0))
                     .child(app.t("backups.import"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.dialog = Some(Dialog::ImportInstance);
+                        this.dialog_busy = false;
+                        this.dialog_field_error = None;
+                        this.dialog_error = None;
                         cx.notify();
                     })),
             )
@@ -569,149 +678,98 @@ fn instances_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina
     );
     let header = page_header(app, "instances.title", "instances.subtitle", actions);
 
+    let total = app.instances.len();
     let rows: Vec<AnyElement> = app
         .instances
         .clone()
         .into_iter()
-        .map(|summary| {
+        .enumerate()
+        .map(|(index, summary)| {
             let id = summary.record.id.clone();
             let open_id = id.clone();
             let play_id = id.clone();
             let running = app.is_game_running(&id);
-            let status = if running {
-                chip(
-                    app.t("instances.running"),
-                    ColorRole::TERTIARY_CONTAINER,
-                    ColorRole::ON_TERTIARY_CONTAINER,
-                )
-            } else if summary.installed {
-                chip(
-                    app.t("instances.installed"),
-                    ColorRole::SECONDARY_CONTAINER,
-                    ColorRole::ON_SECONDARY_CONTAINER,
-                )
+            let installed = summary.installed;
+            let row = ListItem::new(format!("instance-row-{id}"), summary.record.name.clone())
+                .leading(ListLeading::Tinted(
+                    material_icon("sports_esports", 24.0),
+                    Tint::Teal,
+                    40.,
+                ))
+                .supporting(instance_meta(app, &summary.record))
+                .container(ColorRole::SURFACE_CONTAINER_LOW)
+                .divider(index + 1 < total)
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.open_instance(open_id.clone(), cx)),
+                );
+            let action = if running {
+                MaterialButton::new(format!("stop-{id}"))
+                    .variant(ButtonVariant::Tonal)
+                    .button_size(ButtonSize::Small)
+                    .icon(material_icon("stop", 20.0))
+                    .child(app.t("instances.stop"))
+                    .on_click(cx.listener(move |this, _, _, cx| this.stop_game(&play_id, cx)))
+                    .into_any_element()
             } else {
-                chip(
-                    app.t("instances.not_installed"),
-                    ColorRole::SURFACE_CONTAINER_HIGHEST,
-                    ColorRole::ON_SURFACE_VARIANT,
-                )
+                MaterialButton::new(format!("play-{id}"))
+                    .variant(ButtonVariant::Tonal)
+                    .button_size(ButtonSize::Small)
+                    .icon(material_icon("play_arrow", 20.0))
+                    .child(app.t("instances.play"))
+                    .disabled(!installed)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.launch_instance(play_id.clone(), None, cx)
+                    }))
+                    .into_any_element()
             };
-            div()
-                .w_full()
-                .rounded(px(20.))
-                .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
-                .p(px(16.))
+            let action = div()
                 .flex()
                 .items_center()
-                .gap(px(16.))
-                .child(
-                    div()
-                        .size(px(48.))
-                        .rounded(px(16.))
-                        .bg(color(ColorRole::TERTIARY_CONTAINER))
-                        .text_color(color(ColorRole::ON_TERTIARY_CONTAINER))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(material_icon("sports_esports", 26.0)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            type_role(div(), TypeRole::TitleMedium)
-                                .child(summary.record.name.clone()),
-                        )
-                        .child(muted(format!(
-                            "{} · {} · {} MB",
-                            summary.record.version_id,
-                            loader_text(app, &summary.record.loader),
-                            summary.record.memory_mb
-                        ))),
-                )
-                .child(status.flex_shrink_0())
-                .child(
-                    div()
-                        .flex()
-                        .flex_shrink_0()
-                        .gap(px(8.))
-                        .child(
-                            MaterialButton::new(format!("open-{id}"))
-                                .variant(ButtonVariant::Text)
-                                .button_size(ButtonSize::Small)
-                                .child(app.t("common.details"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.open_instance(open_id.clone(), cx)
-                                })),
-                        )
-                        .child(if running {
-                            MaterialButton::new(format!("stop-{id}"))
-                                .variant(ButtonVariant::Tonal)
-                                .button_size(ButtonSize::Small)
-                                .icon(material_icon("stop", 18.0))
-                                .child(app.t("instances.stop"))
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.stop_game(&play_id, cx)),
-                                )
-                                .into_any_element()
-                        } else {
-                            MaterialButton::new(format!("play-{id}"))
-                                .variant(ButtonVariant::Filled)
-                                .button_size(ButtonSize::Small)
-                                .icon(material_icon("play_arrow", 18.0))
-                                .child(app.t("instances.play"))
-                                .disabled(!summary.installed)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.launch_instance(play_id.clone(), None, cx)
-                                }))
-                                .into_any_element()
-                        }),
-                )
-                .into_any_element()
+                .gap(SPACE_S)
+                .children(status_badge(app, running, installed))
+                .child(action)
+                .into_any_element();
+            row_with_action(row, Some(action))
         })
         .collect();
 
     let body = if app.loading.instances && rows.is_empty() {
-        loading_panel(app, "instances.loading")
+        loading_panel(app, "instances-loading", "instances.loading")
     } else if let Some(error) = app.instance_error.as_ref().filter(|_| rows.is_empty()) {
         let retry = MaterialButton::new("instances-retry")
             .variant(ButtonVariant::Text)
-            .icon(material_icon("refresh", 18.0))
+            .icon(material_icon("refresh", 20.0))
             .child(app.t("common.retry"))
             .on_click(cx.listener(|this, _, _, cx| this.refresh_instances(cx)))
             .into_any_element();
-        error_panel(app, error, Some(retry))
+        error_panel(app, "instances-error", error, Some(retry))
     } else if rows.is_empty() {
-        panel()
-            .child(empty_state(
-                app,
-                "grid_view",
-                "instances.empty",
-                "instances.empty_body",
-                Some(
-                    MaterialButton::new("instances-create-empty")
-                        .variant(ButtonVariant::Filled)
-                        .icon(material_icon("add", 20.0))
-                        .child(app.t("instances.new"))
-                        .on_click(cx.listener(|this, _, _, cx| this.open_create_dialog(cx)))
-                        .into_any_element(),
-                ),
-            ))
-            .into_any_element()
+        empty_state(
+            app,
+            "instances-empty",
+            "grid_view",
+            "instances.empty",
+            "instances.empty_body",
+            Some(
+                MaterialButton::new("instances-create-empty")
+                    .variant(ButtonVariant::Text)
+                    .icon(material_icon("add", 20.0))
+                    .child(app.t("instances.new"))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_create_dialog(cx)))
+                    .into_any_element(),
+            ),
+        )
     } else {
         div()
+            .w_full()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(SPACE_S)
             .children(rows)
             .into_any_element()
     };
 
-    page_frame(window, header, body)
+    page_frame(app, window, header, body)
 }
 
 fn instance_detail(
@@ -729,36 +787,134 @@ fn instance_detail(
     let record = summary.record.clone();
     let running = app.is_game_running(&id);
     let install = app.installs.get(&id).cloned();
+    let menu_id = format!("detail-menu-{id}");
+
+    let menu_items = [
+        MaterialMenuItem::new(app.t("instances.open_folder"))
+            .leading(material_icon("folder_open", 20.0))
+            .on_click(cx.listener({
+                let id = id.clone();
+                move |this, _, _, cx| {
+                    this.menu_open = None;
+                    this.open_folder(&id, cx);
+                }
+            })),
+        MaterialMenuItem::new(app.t("instances.duplicate"))
+            .leading(material_icon("content_copy", 20.0))
+            .on_click(cx.listener({
+                let id = id.clone();
+                move |this, _, _, cx| {
+                    this.menu_open = None;
+                    this.duplicate_instance(id.clone(), cx);
+                }
+            })),
+        MaterialMenuItem::new(app.t("backups.export"))
+            .leading(material_icon("upload", 20.0))
+            .on_click(cx.listener({
+                let id = id.clone();
+                move |this, _, _, cx| {
+                    this.menu_open = None;
+                    this.export_instance(id.clone(), cx);
+                }
+            })),
+        MaterialMenuItem::new(app.t("instances.delete"))
+            .leading(material_icon("delete", 20.0))
+            .divider(true)
+            .on_click(cx.listener({
+                let id = id.clone();
+                let name = record.name.clone();
+                move |this, _, _, cx| {
+                    this.menu_open = None;
+                    this.dialog = Some(Dialog::DeleteInstance {
+                        id: id.clone(),
+                        name: name.clone(),
+                    });
+                    this.dialog_busy = false;
+                    cx.notify();
+                }
+            })),
+    ];
+    let menu = MaterialMenu::new(menu_id.clone()).items(menu_items);
+    let trigger = menu_trigger(menu_id.clone(), app.t("common.more"), cx);
+    let overflow = MenuPopup::new(format!("{menu_id}-popup"), trigger, menu)
+        .open(menu_open(app, &menu_id))
+        .on_open_change(cx.listener({
+            let menu_id = menu_id.clone();
+            move |this, open: &bool, _, cx| {
+                this.menu_open = open.then(|| menu_id.clone());
+                cx.notify();
+            }
+        }))
+        .into_any_element();
+
+    let primary_actions = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(SPACE_S)
+        .child(if running {
+            MaterialButton::new("detail-stop")
+                .variant(ButtonVariant::Tonal)
+                .icon(material_icon("stop", 20.0))
+                .child(app.t("instances.stop"))
+                .on_click(cx.listener({
+                    let id = id.clone();
+                    move |this, _, _, cx| this.stop_game(&id, cx)
+                }))
+                .into_any_element()
+        } else {
+            MaterialButton::new("detail-play")
+                .variant(ButtonVariant::Filled)
+                .icon(material_icon("play_arrow", 20.0))
+                .child(app.t("instances.play"))
+                .disabled(!summary.installed)
+                .on_click(cx.listener({
+                    let id = id.clone();
+                    move |this, _, _, cx| this.launch_instance(id.clone(), None, cx)
+                }))
+                .into_any_element()
+        })
+        .child(
+            MaterialButton::new("detail-install")
+                .variant(ButtonVariant::Tonal)
+                .icon(material_icon(
+                    if summary.installed {
+                        "build"
+                    } else {
+                        "download"
+                    },
+                    20.0,
+                ))
+                .child(if summary.installed {
+                    app.t("instances.repair")
+                } else {
+                    app.t("instances.install")
+                })
+                .on_click(cx.listener({
+                    let id = id.clone();
+                    move |this, _, _, cx| this.start_install(id.clone(), cx)
+                })),
+        )
+        .child(overflow);
 
     let header = div()
         .flex()
         .flex_col()
-        .gap(px(16.))
-        .child(
-            MaterialButton::new("detail-back")
-                .variant(ButtonVariant::Text)
-                .button_size(ButtonSize::Small)
-                .icon(material_icon("arrow_back", 18.0))
-                .icon_position(ButtonIconPosition::Leading)
-                .child(app.t("common.back"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.selected_instance = None;
-                    cx.notify()
-                })),
-        )
+        .gap(SPACE_L)
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(16.))
+                .gap(SPACE_L)
                 .flex_wrap()
                 .child(
                     div()
-                        .size(px(64.))
-                        .rounded(px(22.))
+                        .size(rem(64.))
+                        .rounded(RADIUS_CARD)
                         .bg(color(ColorRole::TERTIARY_CONTAINER))
                         .text_color(color(ColorRole::ON_TERTIARY_CONTAINER))
                         .flex()
+                        .flex_shrink_0()
                         .items_center()
                         .justify_center()
                         .child(material_icon("sports_esports", 32.0)),
@@ -767,116 +923,16 @@ fn instance_detail(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(4.))
+                        .gap(SPACE_XS)
                         .flex_1()
-                        .min_w(px(220.))
+                        .min_w(rem(220.))
                         .child(
                             type_scale(div(), TypeRole::HeadlineLarge.emphasized())
                                 .child(record.name.clone()),
                         )
-                        .child(muted(format!(
-                            "{} · {} · {} MB",
-                            record.version_id,
-                            loader_text(app, &record.loader),
-                            instances::effective_memory_mb(&app.paths, &record)
-                        ))),
+                        .child(meta_text(instance_meta(app, &record))),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .flex_wrap()
-                        .child(if running {
-                            let stop_id = id.clone();
-                            MaterialButton::new("detail-stop")
-                                .variant(ButtonVariant::Tonal)
-                                .icon(material_icon("stop", 20.0))
-                                .child(app.t("instances.stop"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.stop_game(&stop_id, cx);
-                                }))
-                                .into_any_element()
-                        } else {
-                            MaterialButton::new("detail-play")
-                                .variant(ButtonVariant::Filled)
-                                .icon(material_icon("play_arrow", 20.0))
-                                .child(app.t("instances.play"))
-                                .disabled(!summary.installed)
-                                .on_click(cx.listener({
-                                    let id = id.clone();
-                                    move |this, _, _, cx| this.launch_instance(id.clone(), None, cx)
-                                }))
-                                .into_any_element()
-                        })
-                        .child(
-                            MaterialButton::new("detail-install")
-                                .variant(ButtonVariant::Tonal)
-                                .icon(material_icon(
-                                    if summary.installed {
-                                        "build"
-                                    } else {
-                                        "download"
-                                    },
-                                    20.0,
-                                ))
-                                .child(if summary.installed {
-                                    app.t("instances.repair")
-                                } else {
-                                    app.t("instances.install")
-                                })
-                                .on_click(cx.listener({
-                                    let id = id.clone();
-                                    move |this, _, _, cx| this.start_install(id.clone(), cx)
-                                })),
-                        )
-                        .child(
-                            IconButton::new(
-                                "detail-folder",
-                                material_icon("folder_open", 22.0),
-                                app.t("instances.open_folder"),
-                            )
-                            .on_click(cx.listener({
-                                let id = id.clone();
-                                move |this, _, _, cx| this.open_folder(&id, cx)
-                            })),
-                        )
-                        .child(
-                            IconButton::new(
-                                "detail-duplicate",
-                                material_icon("content_copy", 22.0),
-                                app.t("instances.duplicate"),
-                            )
-                            .on_click(cx.listener({
-                                let id = id.clone();
-                                move |this, _, _, cx| this.duplicate_instance(id.clone(), cx)
-                            })),
-                        )
-                        .child(
-                            IconButton::new(
-                                "detail-export",
-                                material_icon("upload", 22.0),
-                                app.t("backups.export"),
-                            )
-                            .on_click(cx.listener({
-                                let id = id.clone();
-                                move |this, _, _, cx| this.export_instance(id.clone(), cx)
-                            })),
-                        )
-                        .child(
-                            IconButton::new(
-                                "detail-delete",
-                                material_icon("delete", 22.0),
-                                app.t("instances.delete"),
-                            )
-                            .on_click(cx.listener({
-                                let id = id.clone();
-                                move |this, _, _, cx| {
-                                    this.dialog = Some(Dialog::DeleteInstance(id.clone()));
-                                    cx.notify();
-                                }
-                            })),
-                        ),
-                ),
+                .child(primary_actions),
         )
         .children(install.map(|task| install_banner(app, &task)));
 
@@ -919,13 +975,23 @@ fn instance_detail(
     };
 
     page_frame(
+        app,
         window,
         header.into_any_element(),
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .child(tabs)
+            .gap(SPACE_L)
+            .child(
+                // Six labels exceed a compact or 200% content width; the tab
+                // strip scrolls horizontally instead of clipping a destination.
+                div()
+                    .id("instance-tabs-scroll")
+                    .w_full()
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .child(div().min_w(rem(520.)).child(tabs)),
+            )
             .child(body)
             .into_any_element(),
     )
@@ -938,38 +1004,40 @@ fn install_banner(app: &Yuhina, task: &InstallTask) -> AnyElement {
     } else if task.finished {
         app.t("instances.install_done").to_string()
     } else {
-        format!(
-            "{} · {} · {:.0}%",
-            app.t("instances.install_progress"),
-            app.phase_label(task.phase),
-            task.percent
-        )
+        app.t("instances.install_detail")
+            .replace("{phase}", app.phase_label(task.phase))
+            .replace("{percent}", &format!("{:.0}", task.percent))
     };
+    let error = task.error.is_some();
     div()
         .w_full()
-        .rounded(px(20.))
-        .bg(color(if task.error.is_some() {
+        .rounded(RADIUS_ROW)
+        .bg(color(if error {
             ColorRole::ERROR_CONTAINER
         } else {
             ColorRole::SECONDARY_CONTAINER
         }))
-        .text_color(color(if task.error.is_some() {
+        .text_color(color(if error {
             ColorRole::ON_ERROR_CONTAINER
         } else {
             ColorRole::ON_SECONDARY_CONTAINER
         }))
-        .p(px(16.))
+        .p(SPACE_L)
         .flex()
         .flex_col()
-        .gap(px(8.))
+        .gap(SPACE_S)
         .child(type_role(div(), TypeRole::TitleSmall).child(label))
         .child(
-            div().child(
-                LinearProgress::new("install-progress", app.t("instances.install_progress_a11y"))
-                    .value(Some(fraction))
-                    .thickness(px(4.)),
-            ),
+            LinearProgress::new("install-progress", app.t("instances.install_progress_a11y"))
+                .value(Some(fraction))
+                .thickness(px(4.)),
         )
+        .children(task.message.as_ref().map(|message| {
+            type_role(div(), TypeRole::BodySmall)
+                .font_family("monospace")
+                .line_clamp(2)
+                .child(message.clone())
+        }))
         .into_any_element()
 }
 
@@ -979,7 +1047,10 @@ fn overview_tab(app: &Yuhina, record: &InstanceRecord, summary: &InstanceSummary
         (app.t("common.loader"), loader_text(app, &record.loader)),
         (
             app.t("common.memory"),
-            format!("{} MB", instances::effective_memory_mb(&app.paths, record)),
+            app.t("instances.memory_value").replace(
+                "{mb}",
+                &instances::effective_memory_mb(&app.paths, record).to_string(),
+            ),
         ),
         (
             app.t("common.java"),
@@ -1006,8 +1077,9 @@ fn overview_tab(app: &Yuhina, record: &InstanceRecord, summary: &InstanceSummary
             div()
                 .flex()
                 .flex_col()
-                .gap(px(2.))
-                .min_w(px(160.))
+                .gap(SPACE_XS)
+                .min_w(rem(160.))
+                .flex_1()
                 .child(muted(label))
                 .child(type_role(div(), TypeRole::TitleSmall).child(value))
                 .into_any_element()
@@ -1031,7 +1103,7 @@ fn overview_tab(app: &Yuhina, record: &InstanceRecord, summary: &InstanceSummary
         .into_iter()
         .map(|line| {
             type_role(div(), TypeRole::BodySmall)
-                .line_height(rem(18.))
+                .font_family("monospace")
                 .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                 .child(line.text)
                 .into_any_element()
@@ -1041,20 +1113,20 @@ fn overview_tab(app: &Yuhina, record: &InstanceRecord, summary: &InstanceSummary
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(SPACE_L)
         .child(
-            panel()
+            card_surface()
                 .flex()
                 .flex_row()
                 .flex_wrap()
-                .gap(px(24.))
+                .gap(SPACE_XL)
                 .children(info_rows),
         )
         .child(
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(SPACE_S)
                 .child(section_label(app, "instances.tab.logs"))
                 .child(if log_lines.is_empty() {
                     muted(app.t("instances.logs_empty")).into_any_element()
@@ -1066,29 +1138,20 @@ fn overview_tab(app: &Yuhina, record: &InstanceRecord, summary: &InstanceSummary
                         .into_any_element()
                 }),
         )
-        .child(
-            if summary.required_java_major.is_some() && !summary.installed {
-                panel()
-                    .child(
-                        type_role(div(), TypeRole::BodySmall)
-                            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                            .child(format!(
-                                "{}: Java {}",
-                                app.t("common.java"),
-                                summary.required_java_major.unwrap_or(21)
-                            )),
-                    )
-                    .into_any_element()
-            } else {
-                div().into_any_element()
-            },
+        .children(
+            (summary.required_java_major.is_some() && !summary.installed).then(|| {
+                card_surface().child(meta_text(app.t("instances.java_required").replace(
+                    "{major}",
+                    &summary.required_java_major.unwrap_or(21).to_string(),
+                )))
+            }),
         )
         .into_any_element()
 }
 
 fn logs_tab(app: &Yuhina, id: &str) -> AnyElement {
     let Some(game) = app.running.get(id) else {
-        return panel()
+        return card_surface()
             .child(muted(app.t("instances.logs_empty")))
             .into_any_element();
     };
@@ -1105,7 +1168,7 @@ fn logs_tab(app: &Yuhina, id: &str) -> AnyElement {
                 _ => ColorRole::ON_SURFACE_VARIANT,
             };
             type_role(div(), TypeRole::BodySmall)
-                .line_height(rem(18.))
+                .font_family("monospace")
                 .text_color(color(tint))
                 .child(line.text.clone())
                 .into_any_element()
@@ -1114,10 +1177,10 @@ fn logs_tab(app: &Yuhina, id: &str) -> AnyElement {
     div()
         .id("log-scroll")
         .w_full()
-        .h(px(520.))
-        .rounded(px(20.))
+        .h(rem(520.))
+        .rounded(RADIUS_ROW)
         .bg(color(ColorRole::SURFACE_CONTAINER_LOWEST))
-        .p(px(16.))
+        .p(SPACE_L)
         .overflow_y_scroll()
         .track_scroll(&game.scroll)
         .children(lines)
@@ -1158,43 +1221,32 @@ fn content_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
                 let remove_id = id.to_string();
                 let remove_type = project_type.to_string();
                 let remove_name = name.clone();
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(12.))
-                    .py(px(8.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .min_w_0()
-                            .child(type_role(div(), TypeRole::TitleSmall).child(name))
-                            .child(muted(format!("{:.1} MB", size as f64 / 1_048_576.0))),
-                    )
-                    .child(
-                        IconButton::new(
-                            format!("remove-{project_type}-{}", remove_name),
-                            material_icon("delete", 18.0),
-                            app.t("instances.remove_mod"),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.dialog = Some(Dialog::ConfirmRemoveContent {
-                                instance_id: remove_id.clone(),
-                                project_type: remove_type.clone(),
-                                filename: remove_name.clone(),
-                            });
-                            cx.notify();
-                        })),
-                    )
-                    .into_any_element()
+                let row = ListItem::new(format!("content-{project_type}-{name}"), name)
+                    .leading(ListLeading::Icon(material_icon("description", 24.0)))
+                    .supporting(format!("{:.1} MB", size as f64 / 1_048_576.0))
+                    .container(ColorRole::SURFACE_CONTAINER_LOW);
+                let action = IconButton::new(
+                    format!("remove-{project_type}-{}", remove_name),
+                    material_icon("delete", 20.0),
+                    app.t("instances.remove_mod"),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.dialog = Some(Dialog::ConfirmRemoveContent {
+                        instance_id: remove_id.clone(),
+                        project_type: remove_type.clone(),
+                        filename: remove_name.clone(),
+                    });
+                    this.dialog_busy = false;
+                    cx.notify();
+                }));
+                row_with_action(row, Some(action.into_any_element()))
             })
             .collect();
         sections.push(
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(SPACE_S)
                 .child(
                     div()
                         .flex()
@@ -1205,7 +1257,7 @@ fn content_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
                             MaterialButton::new(format!("browse-{project_type}"))
                                 .variant(ButtonVariant::Text)
                                 .button_size(ButtonSize::ExtraSmall)
-                                .icon(material_icon("explore", 16.0))
+                                .icon(material_icon("explore", 20.0))
                                 .child(app.t("instances.add_mod"))
                                 .on_click(cx.listener({
                                     let id = id.to_string();
@@ -1222,7 +1274,12 @@ fn content_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
                 .child(if rows.is_empty() {
                     muted(app.t("instances.content_empty")).into_any_element()
                 } else {
-                    div().flex().flex_col().children(rows).into_any_element()
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_S)
+                        .children(rows)
+                        .into_any_element()
                 })
                 .into_any_element(),
         );
@@ -1230,7 +1287,7 @@ fn content_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(SPACE_L)
         .children(sections)
         .into_any_element()
 }
@@ -1243,14 +1300,14 @@ fn backups_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(12.))
+        .gap(SPACE_M)
         .flex_wrap()
         .child(section_label(app, "instances.tab.backups"))
         .child(
             MaterialButton::new("backup-create")
                 .variant(ButtonVariant::Filled)
                 .button_size(ButtonSize::Small)
-                .icon(material_icon("archive", 18.0))
+                .icon(material_icon("archive", 20.0))
                 .child(app.t("backups.create"))
                 .disabled(busy || running)
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -1258,17 +1315,19 @@ fn backups_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
                 })),
         );
 
-    let label_field = div().flex().flex_col().gap(px(6.)).w_full().child(
+    let label_field = div().flex().flex_col().gap(SPACE_XS).w_full().child(
         TextField::new("backup-label", &app.backup_label)
             .w_full()
             .label(app.t("backups.label"))
             .placeholder(app.t("backups.label_placeholder")),
     );
 
+    let total = app.backups.len();
     let rows: Vec<AnyElement> = app
         .backups
         .iter()
-        .map(|backup| {
+        .enumerate()
+        .map(|(index, backup)| {
             let label = backup
                 .label
                 .clone()
@@ -1280,102 +1339,79 @@ fn backups_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
             let delete_backup_id = backup.id.clone();
             let restore_label = label.clone();
             let delete_label = label.clone();
-            div()
-                .w_full()
-                .rounded(px(18.))
-                .bg(color(ColorRole::SURFACE_CONTAINER))
-                .p(px(14.))
+            let summary = app
+                .t("backups.summary_format")
+                .replace("{time}", &backup_time(&backup.created_at))
+                .replace("{bytes}", &format_bytes(backup.bytes))
+                .replace("{files}", &backup.entries.to_string());
+            let row = ListItem::new(format!("backup-{}", backup.id), label)
+                .leading(ListLeading::Tinted(
+                    material_icon("archive", 24.0),
+                    Tint::Teal,
+                    40.,
+                ))
+                .supporting(summary)
+                .container(ColorRole::SURFACE_CONTAINER_LOW)
+                .divider(index + 1 < total);
+            let action = div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(SPACE_XS)
                 .child(
-                    div()
-                        .size(px(40.))
-                        .rounded(px(14.))
-                        .bg(color(ColorRole::TERTIARY_CONTAINER))
-                        .text_color(color(ColorRole::ON_TERTIARY_CONTAINER))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(material_icon("archive", 22.0)),
+                    MaterialButton::new(format!("backup-restore-{}", backup.id))
+                        .variant(ButtonVariant::Text)
+                        .button_size(ButtonSize::Small)
+                        .icon(material_icon("settings_backup_restore", 20.0))
+                        .child(app.t("backups.restore"))
+                        .disabled(running)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.dialog = Some(Dialog::RestoreBackup {
+                                instance_id: restore_instance.clone(),
+                                backup_id: restore_backup_id.clone(),
+                                label: restore_label.clone(),
+                            });
+                            this.dialog_busy = false;
+                            cx.notify();
+                        })),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w(px(180.))
-                        .child(type_role(div(), TypeRole::TitleSmall).child(label))
-                        .child(muted(format!(
-                            "{} · {} · {} {}",
-                            backup_time(&backup.created_at),
-                            format_bytes(backup.bytes),
-                            backup.entries,
-                            app.t("backups.files")
-                        ))),
+                    IconButton::new(
+                        format!("backup-delete-{}", backup.id),
+                        material_icon("delete", 20.0),
+                        app.t("backups.delete"),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.dialog = Some(Dialog::DeleteBackup {
+                            instance_id: delete_instance.clone(),
+                            backup_id: delete_backup_id.clone(),
+                            label: delete_label.clone(),
+                        });
+                        this.dialog_busy = false;
+                        cx.notify();
+                    })),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .child(
-                            MaterialButton::new(format!("backup-restore-{}", backup.id))
-                                .variant(ButtonVariant::Text)
-                                .button_size(ButtonSize::Small)
-                                .icon(material_icon("settings_backup_restore", 18.0))
-                                .child(app.t("backups.restore"))
-                                .disabled(running)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.dialog = Some(Dialog::RestoreBackup {
-                                        instance_id: restore_instance.clone(),
-                                        backup_id: restore_backup_id.clone(),
-                                        label: restore_label.clone(),
-                                    });
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            IconButton::new(
-                                format!("backup-delete-{}", backup.id),
-                                material_icon("delete", 18.0),
-                                app.t("backups.delete"),
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.dialog = Some(Dialog::DeleteBackup {
-                                        instance_id: delete_instance.clone(),
-                                        backup_id: delete_backup_id.clone(),
-                                        label: delete_label.clone(),
-                                    });
-                                    cx.notify();
-                                },
-                            )),
-                        ),
-                )
-                .into_any_element()
+                .into_any_element();
+            row_with_action(row, Some(action))
         })
         .collect();
 
     let list: AnyElement = if busy && app.backups.is_empty() {
-        panel()
-            .child(muted(app.t("common.loading")))
-            .into_any_element()
+        loading_panel(app, "backups-loading", "files.loading")
     } else if rows.is_empty() {
-        panel()
-            .child(empty_state(
-                app,
-                "archive",
-                "backups.empty",
-                "backups.empty_body",
-                None,
-            ))
-            .into_any_element()
+        empty_state(
+            app,
+            "backups-empty",
+            "archive",
+            "backups.empty",
+            "backups.empty_body",
+            None,
+        )
     } else {
-        panel()
+        div()
+            .w_full()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(SPACE_S)
             .children(rows)
             .into_any_element()
     };
@@ -1383,12 +1419,12 @@ fn backups_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(SPACE_L)
         .child(
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(14.))
+                .gap(SPACE_M)
                 .child(heading)
                 .child(label_field)
                 .children((running).then(|| muted(app.t("backups.game_running")))),
@@ -1403,7 +1439,7 @@ fn files_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
         MaterialButton::new("files-root")
             .variant(ButtonVariant::Text)
             .button_size(ButtonSize::ExtraSmall)
-            .icon(material_icon("folder_open", 16.0))
+            .icon(material_icon("folder_open", 20.0))
             .child(app.t("files.root"))
             .on_click(
                 cx.listener(move |this, _, _, cx| this.open_files_dir(&root_id, String::new(), cx)),
@@ -1426,7 +1462,7 @@ fn files_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
         crumbs.push(
             div()
                 .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                .child(material_icon("chevron_right", 16.0))
+                .child(material_icon("chevron_right", 20.0))
                 .into_any_element(),
         );
         crumbs.push(
@@ -1441,10 +1477,12 @@ fn files_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
         );
     }
 
+    let total = app.files_entries.len();
     let rows: Vec<AnyElement> = app
         .files_entries
         .iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(index, entry)| {
             let is_dir = entry.is_dir;
             let relative = entry.relative.clone();
             let target_id = id.to_string();
@@ -1455,14 +1493,15 @@ fn files_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
             };
             let icon = if is_dir { "folder" } else { "description" };
             ListItem::new(format!("file-{}", entry.relative), entry.name.clone())
-                .leading(ListLeading::Icon(material_icon(icon, 20.0)))
+                .leading(ListLeading::Icon(material_icon(icon, 24.0)))
                 .trailing_text(trailing)
                 .trailing(if is_dir {
-                    ListTrailing::Icon(material_icon("chevron_right", 18.0))
+                    ListTrailing::Icon(material_icon("chevron_right", 20.0))
                 } else {
                     ListTrailing::None
                 })
-                .container(ColorRole::SURFACE_CONTAINER)
+                .container(ColorRole::SURFACE_CONTAINER_LOW)
+                .divider(index + 1 < total)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if is_dir {
                         this.open_files_dir(&target_id, relative.clone(), cx);
@@ -1475,24 +1514,31 @@ fn files_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
         .collect();
 
     let list: AnyElement = if app.loading.files && app.files_entries.is_empty() {
-        panel()
-            .child(muted(app.t("files.loading")))
-            .into_any_element()
+        loading_panel(app, "files-loading", "files.loading")
     } else if rows.is_empty() {
-        panel()
-            .child(empty_state(
-                app,
-                "folder",
-                "files.empty",
-                "files.empty_body",
-                None,
-            ))
-            .into_any_element()
+        empty_state(
+            app,
+            "files-empty",
+            "folder",
+            "files.empty",
+            "files.empty_body",
+            Some(
+                MaterialButton::new("files-open-folder")
+                    .variant(ButtonVariant::Text)
+                    .icon(material_icon("folder_open", 20.0))
+                    .child(app.t("instances.open_folder"))
+                    .on_click(cx.listener({
+                        let id = id.to_string();
+                        move |this, _, _, cx| this.open_folder(&id, cx)
+                    }))
+                    .into_any_element(),
+            ),
+        )
     } else {
-        panel()
+        div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(SPACE_XS)
             .children(rows)
             .into_any_element()
     };
@@ -1504,48 +1550,45 @@ fn files_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
                 .lines()
                 .map(|line| {
                     type_role(div(), TypeRole::BodySmall)
-                        .line_height(rem(18.))
                         .font_family("monospace")
                         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                         .child(line.to_string())
                         .into_any_element()
                 })
                 .collect();
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(10.))
+                .gap(SPACE_M)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_between()
-                        .gap(px(12.))
+                        .gap(SPACE_M)
                         .flex_wrap()
                         .child(section_label(app, "files.preview"))
                         .child(muted(preview.relative.clone())),
                 )
                 .children(preview.truncated.then(|| {
-                    chip(
-                        app.t("files.truncated"),
-                        ColorRole::SECONDARY_CONTAINER,
-                        ColorRole::ON_SECONDARY_CONTAINER,
-                    )
+                    status_chip(StatusKind::Neutral)
+                        .child(app.t("files.truncated"))
+                        .into_any_element()
                 }))
                 .child(
                     div()
                         .id("file-preview")
                         .w_full()
-                        .max_h(px(420.))
+                        .max_h(rem(420.))
                         .overflow_y_scroll()
-                        .rounded(px(16.))
+                        .rounded(RADIUS_ROW)
                         .bg(color(ColorRole::SURFACE_CONTAINER_LOWEST))
-                        .p(px(16.))
+                        .p(SPACE_L)
                         .children(lines),
                 )
                 .into_any_element()
         }
-        None => panel()
+        None => card_surface()
             .child(muted(app.t("files.preview_hint")))
             .into_any_element(),
     };
@@ -1553,14 +1596,14 @@ fn files_tab(app: &Yuhina, cx: &mut Context<Yuhina>, id: &str) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(SPACE_L)
         .child(
-            panel()
+            card_surface()
                 .flex()
                 .flex_row()
                 .items_center()
                 .flex_wrap()
-                .gap(px(4.))
+                .gap(SPACE_XS)
                 .children(crumbs),
         )
         .child(list)
@@ -1594,94 +1637,106 @@ fn backup_time(created_at: &str) -> String {
 
 fn settings_tab(app: &Yuhina, cx: &mut Context<Yuhina>, record: &InstanceRecord) -> AnyElement {
     let id = record.id.clone();
-    let presets = [2048u32, 4096, 6144, 8192];
-    let chips: Vec<AnyElement> = presets
-        .into_iter()
+    let presets = [2048u32, 4096, 6144, 8192, 12288];
+    let selected = presets
+        .iter()
+        .position(|mb| record.memory_mode == MemoryMode::Manual && record.memory_mb == *mb)
+        .or_else(|| (record.memory_mode == MemoryMode::Manual).then_some(0));
+    let options: Vec<String> = presets
+        .iter()
         .map(|mb| {
-            let selected = record.memory_mode == MemoryMode::Manual && record.memory_mb == mb;
-            FilterChip::new(format!("memory-{id}-{mb}"), format!("{mb} MB"))
-                .selected(selected)
-                .on_toggle(cx.listener({
-                    let id = id.clone();
-                    move |this, on: &bool, _, cx| {
-                        if *on {
-                            let paths = this.paths.clone();
-                            if let Ok(updated) = instances::update(&paths, &id, |record| {
-                                record.memory_mode = MemoryMode::Manual;
-                                record.memory_mb = mb;
-                            }) && let Some(item) = this
-                                .instances
-                                .iter_mut()
-                                .find(|item| item.record.id == updated.id)
-                            {
-                                item.record = updated;
-                            }
-                            cx.notify();
-                        }
-                    }
-                }))
-                .into_any_element()
+            app.t("instances.memory_value")
+                .replace("{mb}", &mb.to_string())
         })
         .collect();
+    let memory = ExposedDropdown::new("instance-memory", app.t("common.memory"))
+        .options(options)
+        .selected(selected)
+        .full_width()
+        .on_select(cx.listener({
+            let id = id.clone();
+            move |this, index: &usize, _, cx| {
+                let Some(mb) = presets.get(*index).copied() else {
+                    return;
+                };
+                let paths = this.paths.clone();
+                if let Ok(updated) = instances::update(&paths, &id, |record| {
+                    record.memory_mode = MemoryMode::Manual;
+                    record.memory_mb = mb;
+                }) && let Some(item) = this
+                    .instances
+                    .iter_mut()
+                    .find(|item| item.record.id == updated.id)
+                {
+                    item.record = updated;
+                }
+                cx.notify();
+            }
+        }));
+
+    let info_row = |label: &str, value: String| {
+        ListItem::new(format!("instance-info-{label}"), label)
+            .supporting(value)
+            .container(ColorRole::SURFACE_CONTAINER_LOW)
+            .into_any_element()
+    };
 
     div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(SPACE_L)
         .child(
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(SPACE_M)
                 .child(section_label(app, "common.memory"))
                 .child(muted(app.t("instances.memory_hint")))
-                .child(div().flex().flex_wrap().gap(px(8.)).children(chips)),
+                .child(memory),
         )
         .child(
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(10.))
+                .gap(SPACE_XS)
                 .child(section_label(app, "instances.java_path"))
-                .child(
-                    type_role(div(), TypeRole::BodySmall).child(
-                        record
-                            .java_path
-                            .clone()
-                            .unwrap_or_else(|| app.t("common.none").to_string()),
-                    ),
-                )
-                .child(section_label(app, "instances.jvm_args"))
-                .child(
-                    type_role(div(), TypeRole::BodySmall)
-                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                        .child(if record.jvm_args.is_empty() {
-                            app.t("common.none").to_string()
-                        } else {
-                            record.jvm_args.clone()
-                        }),
-                )
-                .child(section_label(app, "instances.game_args"))
-                .child(
-                    type_role(div(), TypeRole::BodySmall)
-                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                        .child(if record.game_args.is_empty() {
-                            app.t("common.none").to_string()
-                        } else {
-                            record.game_args.clone()
-                        }),
-                ),
+                .child(info_row(
+                    app.t("instances.java_path"),
+                    record
+                        .java_path
+                        .clone()
+                        .unwrap_or_else(|| app.t("common.none").to_string()),
+                ))
+                .child(info_row(
+                    app.t("instances.jvm_args"),
+                    if record.jvm_args.is_empty() {
+                        app.t("common.none").to_string()
+                    } else {
+                        record.jvm_args.clone()
+                    },
+                ))
+                .child(info_row(
+                    app.t("instances.game_args"),
+                    if record.game_args.is_empty() {
+                        app.t("common.none").to_string()
+                    } else {
+                        record.game_args.clone()
+                    },
+                )),
         )
         .child(
-            panel().child(
-                type_role(div(), TypeRole::BodySmall)
-                    .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                    .child(format!(
-                        "{}: {}",
-                        app.t("settings.data_dir"),
-                        app.paths.game_dir(&record.id).unwrap_or_default().display()
-                    )),
-            ),
+            card_surface().child(meta_text(
+                app.t("settings.data_dir_format")
+                    .replace("{label}", app.t("settings.data_dir"))
+                    .replace(
+                        "{path}",
+                        &app.paths
+                            .game_dir(&record.id)
+                            .unwrap_or_default()
+                            .display()
+                            .to_string(),
+                    ),
+            )),
         )
         .into_any_element()
 }
@@ -1699,6 +1754,9 @@ fn library(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> A
             .disabled(app.loading.modpack)
             .on_click(cx.listener(|this, _, _, cx| {
                 this.dialog = Some(Dialog::ImportModpack);
+                this.dialog_busy = false;
+                this.dialog_field_error = None;
+                this.dialog_error = None;
                 cx.notify();
             }))
             .into_any_element(),
@@ -1727,174 +1785,175 @@ fn library(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> A
         })
         .collect();
 
-    let target_chips: Vec<AnyElement> = app
-        .instances
-        .clone()
-        .into_iter()
-        .map(|summary| {
-            let id = summary.record.id.clone();
-            FilterChip::new(format!("library-target-{id}"), summary.record.name.clone())
-                .selected(app.library_target.as_deref() == Some(id.as_str()))
-                .on_toggle(cx.listener({
-                    let id = id.clone();
-                    move |this, on: &bool, _, cx| {
-                        if *on {
-                            this.library_target = Some(id.clone());
-                            this.search_library(cx);
-                        }
-                    }
-                }))
-                .into_any_element()
-        })
+    let instances = app.instances.clone();
+    let target_names: Vec<String> = instances
+        .iter()
+        .map(|summary| summary.record.name.clone())
         .collect();
+    let target_selected = app.library_target.as_ref().and_then(|id| {
+        instances
+            .iter()
+            .position(|summary| &summary.record.id == id)
+    });
+    let target = if instances.is_empty() {
+        muted(app.t("library.no_instance")).into_any_element()
+    } else {
+        ExposedDropdown::new("library-target", app.t("library.target"))
+            .options(target_names)
+            .selected(target_selected)
+            .full_width()
+            .on_select(cx.listener(|this, index: &usize, _, cx| {
+                let ids: Vec<String> = this
+                    .instances
+                    .iter()
+                    .map(|summary| summary.record.id.clone())
+                    .collect();
+                if let Some(id) = ids.get(*index) {
+                    this.library_target = Some(id.clone());
+                    this.search_library(cx);
+                }
+            }))
+            .into_any_element()
+    };
 
-    let search_row = div()
-        .flex()
-        .items_end()
-        .gap(px(12.))
-        .child(
-            div().flex_1().min_w(px(240.)).child(
-                TextField::new("library-search", &app.search_input)
-                    .w_full()
-                    .label(app.t("common.search")),
-            ),
-        )
-        .child(
-            MaterialButton::new("library-search-button")
-                .variant(ButtonVariant::Filled)
-                .icon(material_icon("search", 20.0))
-                .child(app.t("common.search"))
-                .on_click(cx.listener(|this, _, _, cx| this.search_library(cx))),
+    let query = app.search_input.read(cx).value().to_string();
+    let mut search = SearchField::new(&app.search_input)
+        .id("library-search")
+        .field_style(SearchFieldStyle::Standard)
+        .leading(material_icon("search", 24.0))
+        .w_full();
+    if !query.is_empty() {
+        search = search.trailing(
+            IconButton::new(
+                "library-search-clear",
+                material_icon("close", 24.0),
+                app.t("common.clear"),
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.clear_library_search(window, cx))),
         );
+    }
 
     let results = app.search_results.clone();
+    let total_hits = results
+        .as_ref()
+        .map(|result| result.total_hits)
+        .unwrap_or(0);
     let result_rows: Vec<AnyElement> = results
         .map(|result| result.hits)
         .unwrap_or_default()
         .into_iter()
         .map(|hit| {
             let project_id = hit.id.clone();
-            div()
-                .w_full()
-                .rounded(px(20.))
-                .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
-                .p(px(16.))
-                .flex()
-                .items_center()
-                .gap(px(14.))
-                .child(
-                    div()
-                        .size(px(44.))
-                        .rounded(px(14.))
-                        .bg(color(ColorRole::SECONDARY_CONTAINER))
-                        .text_color(color(ColorRole::ON_SECONDARY_CONTAINER))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(material_icon("extension", 24.0)),
+            let supporting = if hit.description.trim().is_empty() {
+                format!("{} · {}", hit.author, compact_number(hit.downloads))
+            } else {
+                format!(
+                    "{}\n{} · {}",
+                    hit.description,
+                    hit.author,
+                    compact_number(hit.downloads)
                 )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(type_role(div(), TypeRole::TitleMedium).child(hit.title.clone()))
-                        .child(
-                            type_role(div(), TypeRole::BodySmall)
-                                .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                                .child(hit.description.clone()),
-                        )
-                        .child(muted(format!(
-                            "{} · {} · {}",
-                            hit.author,
-                            compact_number(hit.downloads),
-                            hit.categories.join(" · ")
-                        ))),
-                )
-                .child(
-                    MaterialButton::new(format!("library-install-{}", hit.id))
-                        .variant(ButtonVariant::Tonal)
-                        .button_size(ButtonSize::Small)
-                        .icon(material_icon("download", 18.0))
-                        .child(app.t("library.install"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.install_from_library(project_id.clone(), cx)
-                        })),
-                )
-                .into_any_element()
+            };
+            let row = ListItem::new(format!("library-result-{}", hit.id), hit.title.clone())
+                .leading(ListLeading::Tinted(
+                    material_icon("extension", 24.0),
+                    Tint::Teal,
+                    40.,
+                ))
+                .supporting(supporting)
+                .three_line(true)
+                .container(ColorRole::SURFACE_CONTAINER_LOW);
+            let action = MaterialButton::new(format!("library-install-{}", hit.id))
+                .variant(ButtonVariant::Tonal)
+                .button_size(ButtonSize::Small)
+                .icon(material_icon("download", 20.0))
+                .child(app.t("library.install"))
+                .disabled(app.library_type != "modpack" && app.library_target.is_none())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.install_from_library(project_id.clone(), cx)
+                }))
+                .into_any_element();
+            row_with_action(row, Some(action))
         })
         .collect();
 
-    let body = div()
-        .flex()
-        .flex_col()
-        .gap(px(16.))
-        .child(
-            panel()
-                .flex()
-                .flex_col()
-                .gap(px(12.))
-                .child(search_row)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.))
-                        .child(section_label(app, "library.type"))
-                        .child(div().flex().flex_wrap().gap(px(8.)).children(type_chips)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.))
-                        .child(section_label(app, "library.target"))
-                        .child(if target_chips.is_empty() {
-                            muted(app.t("library.no_instance")).into_any_element()
-                        } else {
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(8.))
-                                .children(target_chips)
-                                .into_any_element()
-                        }),
-                ),
-        )
-        .child(if app.loading.modpack {
-            loading_panel(app, "library.importing")
-        } else if app.loading.library {
-            loading_panel(app, "library.searching")
-        } else if let Some(error) = &app.library_error {
-            let retry = MaterialButton::new("library-retry")
-                .variant(ButtonVariant::Text)
-                .icon(material_icon("refresh", 18.0))
-                .child(app.t("common.retry"))
-                .on_click(cx.listener(|this, _, _, cx| this.search_library(cx)))
-                .into_any_element();
-            error_panel(app, error, Some(retry))
-        } else if result_rows.is_empty() {
-            panel()
-                .child(empty_state(
+    let body =
+        div()
+            .flex()
+            .flex_col()
+            .gap(SPACE_L)
+            .child(
+                card_surface()
+                    .flex()
+                    .flex_col()
+                    .gap(SPACE_M)
+                    .child(search)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(SPACE_S)
+                            .child(section_label(app, "library.type"))
+                            .child(div().flex().flex_wrap().gap(SPACE_S).children(type_chips)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(SPACE_S)
+                            .child(section_label(app, "library.target"))
+                            .child(target),
+                    ),
+            )
+            .child(if app.loading.modpack {
+                loading_panel(app, "library-modpack-loading", "library.importing")
+            } else if app.loading.library {
+                loading_panel(app, "library-search-loading", "library.searching")
+            } else if let Some(error) = &app.library_error {
+                let retry = MaterialButton::new("library-retry")
+                    .variant(ButtonVariant::Text)
+                    .icon(material_icon("refresh", 20.0))
+                    .child(app.t("common.retry"))
+                    .on_click(cx.listener(|this, _, _, cx| this.search_library(cx)))
+                    .into_any_element();
+                error_panel(app, "library-error", error, Some(retry))
+            } else if result_rows.is_empty() {
+                empty_state(
                     app,
+                    "library-empty",
                     "explore",
                     "library.no_results",
                     "library.no_results_body",
-                    None,
-                ))
-                .into_any_element()
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .children(result_rows)
-                .into_any_element()
-        })
-        .into_any_element();
+                    Some(
+                        MaterialButton::new("library-clear-empty")
+                            .variant(ButtonVariant::Text)
+                            .icon(material_icon("close", 20.0))
+                            .child(app.t("common.clear"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.clear_library_search(window, cx)
+                            }))
+                            .into_any_element(),
+                    ),
+                )
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(SPACE_M)
+                    .child(
+                        type_role(div(), TypeRole::LabelLarge)
+                            .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                            .child(
+                                app.t("library.result_count")
+                                    .replace("{count}", &total_hits.to_string()),
+                            ),
+                    )
+                    .child(div().flex().flex_col().gap(SPACE_S).children(result_rows))
+                    .into_any_element()
+            })
+            .into_any_element();
 
-    page_frame(window, header, body)
+    page_frame(app, window, header, body)
 }
 
 fn compact_number(value: u64) -> String {
@@ -1920,6 +1979,8 @@ fn accounts_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
             .on_click(cx.listener(|this, _, _, cx| {
                 this.dialog = Some(Dialog::AddAccount);
                 this.dialog_error = None;
+                this.dialog_field_error = None;
+                this.dialog_busy = false;
                 cx.notify();
             }))
             .into_any_element(),
@@ -1933,10 +1994,11 @@ fn accounts_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
         .map(|account| {
             let set_id = account.id.clone();
             let remove_id = account.id.clone();
+            let remove_name = account.name.clone();
             let kind = match account.kind {
-                crate::core::accounts::AccountKind::Microsoft => app.t("accounts.microsoft"),
-                crate::core::accounts::AccountKind::Offline => app.t("accounts.offline"),
-                crate::core::accounts::AccountKind::Littleskin => app.t("accounts.littleskin"),
+                AccountKind::Microsoft => app.t("accounts.microsoft"),
+                AccountKind::Offline => app.t("accounts.offline"),
+                AccountKind::Littleskin => app.t("accounts.littleskin"),
             };
             let avatar = Avatar::new(
                 format!("account-avatar-{}", account.id),
@@ -1946,105 +2008,98 @@ fn accounts_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                 Some(path) => avatar.image(path),
                 None => avatar.monogram(monogram_initials(&account.name)),
             };
-            let short_uuid: String = account.uuid.chars().take(8).collect();
-            div()
-                .w_full()
-                .rounded(px(20.))
-                .bg(color(if account.active {
-                    ColorRole::SECONDARY_CONTAINER
-                } else {
-                    ColorRole::SURFACE_CONTAINER_LOW
+            let row = ListItem::new(format!("account-{}", account.id), account.name.clone())
+                .leading(ListLeading::Image(Some(
+                    avatar.size(40.).into_any_element(),
+                )))
+                .supporting(kind)
+                .selected(account.active)
+                .container(ColorRole::SURFACE_CONTAINER_LOW)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this
+                        .accounts
+                        .iter()
+                        .any(|item| item.id == set_id && item.active)
+                    {
+                        this.set_active_account(set_id.clone(), cx);
+                    }
+                }));
+            let menu_id = format!("account-menu-{}", account.id);
+            let menu = MaterialMenu::new(menu_id.clone()).items([MaterialMenuItem::new(
+                app.t("accounts.remove"),
+            )
+            .leading(material_icon("person_remove", 20.0))
+            .on_click(cx.listener({
+                let remove_id = remove_id.clone();
+                let remove_name = remove_name.clone();
+                move |this, _, _, cx| {
+                    this.menu_open = None;
+                    this.prompt_remove_account(remove_id.clone(), remove_name.clone(), cx);
+                }
+            }))]);
+            let trigger = menu_trigger(menu_id.clone(), app.t("common.more"), cx);
+            let overflow = MenuPopup::new(format!("{menu_id}-popup"), trigger, menu)
+                .open(menu_open(app, &menu_id))
+                .on_open_change(cx.listener({
+                    let menu_id = menu_id.clone();
+                    move |this, open: &bool, _, cx| {
+                        this.menu_open = open.then(|| menu_id.clone());
+                        cx.notify();
+                    }
                 }))
-                .p(px(16.))
+                .into_any_element();
+            let action = div()
                 .flex()
                 .items_center()
-                .gap(px(14.))
-                .child(avatar)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(type_role(div(), TypeRole::TitleMedium).child(account.name.clone()))
-                        .child(muted(format!("{kind} · {short_uuid}"))),
-                )
-                .children(account.active.then(|| {
-                    chip(
-                        app.t("accounts.active"),
-                        ColorRole::PRIMARY_CONTAINER,
-                        ColorRole::ON_PRIMARY_CONTAINER,
-                    )
-                    .into_any_element()
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .children((!account.active).then(|| {
-                            MaterialButton::new(format!("account-active-{}", account.id))
-                                .variant(ButtonVariant::Text)
-                                .button_size(ButtonSize::Small)
-                                .child(app.t("accounts.set_active"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.set_active_account(set_id.clone(), cx)
-                                }))
-                        }))
-                        .child(
-                            IconButton::new(
-                                format!("account-remove-{}", account.id),
-                                material_icon("delete", 18.0),
-                                app.t("accounts.remove"),
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| this.remove_account(remove_id.clone(), cx),
-                            )),
-                        ),
-                )
-                .into_any_element()
+                .gap(SPACE_S)
+                .children(account.active.then(|| active_badge(app)))
+                .child(overflow)
+                .into_any_element();
+            row_with_action(row, Some(action))
         })
         .collect();
 
     let body = if app.loading.accounts && rows.is_empty() {
-        loading_panel(app, "accounts.loading")
+        loading_panel(app, "accounts-loading", "accounts.loading")
     } else if let Some(error) = app.account_error.as_ref().filter(|_| rows.is_empty()) {
         let retry = MaterialButton::new("accounts-retry")
             .variant(ButtonVariant::Text)
-            .icon(material_icon("refresh", 18.0))
+            .icon(material_icon("refresh", 20.0))
             .child(app.t("common.retry"))
             .on_click(cx.listener(|this, _, _, cx| this.refresh_accounts(cx)))
             .into_any_element();
-        error_panel(app, error, Some(retry))
+        error_panel(app, "accounts-error", error, Some(retry))
     } else if rows.is_empty() {
-        panel()
-            .child(empty_state(
-                app,
-                "person",
-                "accounts.empty",
-                "accounts.empty_body",
-                Some(
-                    MaterialButton::new("accounts-add-empty")
-                        .variant(ButtonVariant::Filled)
-                        .icon(material_icon("person_add", 20.0))
-                        .child(app.t("accounts.add"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.dialog = Some(Dialog::AddAccount);
-                            this.dialog_error = None;
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ),
-            ))
-            .into_any_element()
+        empty_state(
+            app,
+            "accounts-empty",
+            "person",
+            "accounts.empty",
+            "accounts.empty_body",
+            Some(
+                MaterialButton::new("accounts-add-empty")
+                    .variant(ButtonVariant::Text)
+                    .icon(material_icon("person_add", 20.0))
+                    .child(app.t("accounts.add"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.dialog = Some(Dialog::AddAccount);
+                        this.dialog_error = None;
+                        this.dialog_field_error = None;
+                        this.dialog_busy = false;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ),
+        )
     } else {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(SPACE_S)
             .children(rows)
             .into_any_element()
     };
-    page_frame(window, header, body)
+    page_frame(app, window, header, body)
 }
 
 // ---------------------------------------------------------------------------
@@ -2055,7 +2110,8 @@ fn servers_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>)
     let actions = Some(
         div()
             .flex()
-            .gap(px(8.))
+            .flex_wrap()
+            .gap(SPACE_S)
             .child(
                 MaterialButton::new("servers-ping")
                     .variant(ButtonVariant::Text)
@@ -2071,6 +2127,8 @@ fn servers_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.dialog = Some(Dialog::AddServer);
                         this.dialog_error = None;
+                        this.dialog_field_error = None;
+                        this.dialog_busy = false;
                         cx.notify();
                     })),
             )
@@ -2087,132 +2145,133 @@ fn servers_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>)
             let join_server = server.clone();
             let ping_server = server.clone();
             let remove_id = server.id.clone();
-            div()
-                .w_full()
-                .rounded(px(20.))
-                .bg(color(ColorRole::SURFACE_CONTAINER_LOW))
-                .p(px(16.))
+            let remove_name = server.name.clone();
+            let address = servers::format_address(&server.address, server.port);
+            let supporting = match &status {
+                Some(status) => {
+                    let motd = status.motd.replace(['\n', '\r'], " ");
+                    app.t("servers.status_format")
+                        .replace("{motd}", motd.trim())
+                        .replace("{players}", &status.players_online.to_string())
+                        .replace("{max}", &status.players_max.to_string())
+                        .replace("{latency}", &status.latency_ms.to_string())
+                        .replace("{version}", &status.version_name)
+                }
+                None => app.t("servers.offline").to_string(),
+            };
+            let row = ListItem::new(format!("server-{}", server.id), server.name.clone())
+                .leading(ListLeading::Tinted(
+                    material_icon("dns", 24.0),
+                    Tint::Blue,
+                    40.,
+                ))
+                .supporting(supporting)
+                .three_line(true)
+                .trailing_text(address)
+                .container(ColorRole::SURFACE_CONTAINER_LOW);
+            let menu_id = format!("server-menu-{}", server.id);
+            let menu = MaterialMenu::new(menu_id.clone()).items([
+                MaterialMenuItem::new(app.t("servers.ping"))
+                    .leading(material_icon("refresh", 20.0))
+                    .on_click(cx.listener({
+                        let ping_server = ping_server.clone();
+                        move |this, _, _, cx| {
+                            this.menu_open = None;
+                            this.ping_server(ping_server.clone(), cx);
+                        }
+                    })),
+                MaterialMenuItem::new(app.t("servers.remove"))
+                    .leading(material_icon("delete", 20.0))
+                    .divider(true)
+                    .on_click(cx.listener({
+                        let remove_id = remove_id.clone();
+                        let remove_name = remove_name.clone();
+                        move |this, _, _, cx| {
+                            this.menu_open = None;
+                            this.prompt_remove_server(remove_id.clone(), remove_name.clone(), cx);
+                        }
+                    })),
+            ]);
+            let trigger = menu_trigger(menu_id.clone(), app.t("common.more"), cx);
+            let overflow = MenuPopup::new(format!("{menu_id}-popup"), trigger, menu)
+                .open(menu_open(app, &menu_id))
+                .on_open_change(cx.listener({
+                    let menu_id = menu_id.clone();
+                    move |this, open: &bool, _, cx| {
+                        this.menu_open = open.then(|| menu_id.clone());
+                        cx.notify();
+                    }
+                }))
+                .into_any_element();
+            let action = div()
                 .flex()
                 .items_center()
-                .gap(px(14.))
-                .child(
-                    div()
-                        .size(px(44.))
-                        .rounded(px(14.))
-                        .bg(color(ColorRole::SECONDARY_CONTAINER))
-                        .text_color(color(ColorRole::ON_SECONDARY_CONTAINER))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(material_icon("dns", 24.0)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(type_role(div(), TypeRole::TitleMedium).child(server.name.clone()))
-                        .child(muted(servers::format_address(&server.address, server.port)))
-                        .child(match &status {
-                            Some(status) => muted(format!(
-                                "{} · {}/{} · {} ms · {}",
-                                status.motd,
-                                status.players_online,
-                                status.players_max,
-                                status.latency_ms,
-                                status.version_name
-                            )),
-                            None => muted(app.t("servers.offline")),
-                        }),
-                )
+                .gap(SPACE_S)
                 .children(status.as_ref().map(|status| {
-                    chip(
+                    Badge::large(
+                        format!("server-players-{}", server.id),
                         format!("{}/{}", status.players_online, status.players_max),
-                        ColorRole::TERTIARY_CONTAINER,
-                        ColorRole::ON_TERTIARY_CONTAINER,
                     )
+                    .color(BadgeColor::Info)
                     .into_any_element()
                 }))
+                .child(overflow)
                 .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(
-                            IconButton::new(
-                                format!("server-ping-{}", server.id),
-                                material_icon("refresh", 18.0),
-                                app.t("servers.ping"),
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| this.ping_server(ping_server.clone(), cx),
-                            )),
-                        )
-                        .child(
-                            IconButton::new(
-                                format!("server-remove-{}", server.id),
-                                material_icon("delete", 18.0),
-                                app.t("servers.remove"),
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| this.remove_server(remove_id.clone(), cx),
-                            )),
-                        )
-                        .child(
-                            MaterialButton::new(format!("server-join-{}", server.id))
-                                .variant(ButtonVariant::Filled)
-                                .button_size(ButtonSize::Small)
-                                .icon(material_icon("login", 18.0))
-                                .child(app.t("servers.join"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    join_server_target(this, &join_server, cx)
-                                })),
-                        ),
+                    MaterialButton::new(format!("server-join-{}", server.id))
+                        .variant(ButtonVariant::Tonal)
+                        .button_size(ButtonSize::Small)
+                        .icon(material_icon("login", 20.0))
+                        .child(app.t("servers.join"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            join_server_target(this, &join_server, cx)
+                        })),
                 )
-                .into_any_element()
+                .into_any_element();
+            row_with_action(row, Some(action))
         })
         .collect();
 
     let body = if app.loading.servers && rows.is_empty() {
-        loading_panel(app, "servers.loading")
+        loading_panel(app, "servers-loading", "servers.loading")
     } else if let Some(error) = app.server_error.as_ref().filter(|_| rows.is_empty()) {
         let retry = MaterialButton::new("servers-retry")
             .variant(ButtonVariant::Text)
-            .icon(material_icon("refresh", 18.0))
+            .icon(material_icon("refresh", 20.0))
             .child(app.t("common.retry"))
             .on_click(cx.listener(|this, _, _, cx| this.refresh_servers(cx)))
             .into_any_element();
-        error_panel(app, error, Some(retry))
+        error_panel(app, "servers-error", error, Some(retry))
     } else if rows.is_empty() {
-        panel()
-            .child(empty_state(
-                app,
-                "dns",
-                "servers.empty",
-                "servers.empty_body",
-                Some(
-                    MaterialButton::new("servers-add-empty")
-                        .variant(ButtonVariant::Filled)
-                        .icon(material_icon("add", 20.0))
-                        .child(app.t("servers.add"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.dialog = Some(Dialog::AddServer);
-                            this.dialog_error = None;
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ),
-            ))
-            .into_any_element()
+        empty_state(
+            app,
+            "servers-empty",
+            "dns",
+            "servers.empty",
+            "servers.empty_body",
+            Some(
+                MaterialButton::new("servers-add-empty")
+                    .variant(ButtonVariant::Text)
+                    .icon(material_icon("add", 20.0))
+                    .child(app.t("servers.add"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.dialog = Some(Dialog::AddServer);
+                        this.dialog_error = None;
+                        this.dialog_field_error = None;
+                        this.dialog_busy = false;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ),
+        )
     } else {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(SPACE_S)
             .children(rows)
             .into_any_element()
     };
-    page_frame(window, header, body)
+    page_frame(app, window, header, body)
 }
 
 fn join_server_target(app: &mut Yuhina, server: &ServerRecord, cx: &mut Context<Yuhina>) {
@@ -2257,7 +2316,20 @@ fn join_server_target(app: &mut Yuhina, server: &ServerRecord, cx: &mut Context<
 // ---------------------------------------------------------------------------
 
 fn activity(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
-    let header = page_header(app, "activity.title", "activity.subtitle", None);
+    let finished = app.installs.values().any(|task| task.finished);
+    let actions = finished.then(|| {
+        MaterialButton::new("activity-clear-finished")
+            .variant(ButtonVariant::Text)
+            .icon(material_icon("clear_all", 20.0))
+            .child(app.t("activity.dismiss"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.installs.retain(|_, task| !task.finished);
+                cx.notify();
+            }))
+            .into_any_element()
+    });
+    let header = page_header(app, "activity.title", "activity.subtitle", actions);
+
     let running: Vec<AnyElement> = app
         .running
         .iter()
@@ -2278,29 +2350,41 @@ fn activity(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> 
                 .rev()
                 .map(|line| {
                     type_role(div(), TypeRole::BodySmall)
+                        .font_family("monospace")
                         .text_color(color(ColorRole::ON_SURFACE_VARIANT))
                         .child(line.text.clone())
                         .into_any_element()
                 })
                 .collect();
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(SPACE_S)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_between()
+                        .gap(SPACE_S)
                         .child(type_role(div(), TypeRole::TitleMedium).child(name))
                         .child(
-                            MaterialButton::new(format!("activity-stop-{id}"))
-                                .variant(ButtonVariant::Tonal)
-                                .button_size(ButtonSize::Small)
-                                .icon(material_icon("stop", 18.0))
-                                .child(app.t("instances.stop"))
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.stop_game(&stop_id, cx)),
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(SPACE_S)
+                                .child(
+                                    status_chip(StatusKind::Success)
+                                        .child(app.t("instances.running")),
+                                )
+                                .child(
+                                    MaterialButton::new(format!("activity-stop-{id}"))
+                                        .variant(ButtonVariant::Tonal)
+                                        .button_size(ButtonSize::Small)
+                                        .icon(material_icon("stop", 20.0))
+                                        .child(app.t("instances.stop"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.stop_game(&stop_id, cx)
+                                        })),
                                 ),
                         ),
                 )
@@ -2320,13 +2404,37 @@ fn activity(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> 
                 .map(|item| item.record.name.clone())
                 .unwrap_or_else(|| task.instance_id.clone());
             let retry_id = task.instance_id.clone();
-            panel()
+            let dismiss_id = task.instance_id.clone();
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(SPACE_S)
                 .child(
-                    type_role(div(), TypeRole::TitleMedium)
-                        .child(format!("{name} · {}", app.phase_label(task.phase))),
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(SPACE_S)
+                        .child(
+                            type_role(div(), TypeRole::TitleMedium).child(
+                                app.t("activity.install_format")
+                                    .replace("{name}", &name)
+                                    .replace("{phase}", app.phase_label(task.phase)),
+                            ),
+                        )
+                        .children(task.finished.then(|| {
+                            IconButton::new(
+                                format!("activity-dismiss-{dismiss_id}"),
+                                material_icon("close", 20.0),
+                                app.t("activity.dismiss"),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.installs.remove(&dismiss_id);
+                                    cx.notify();
+                                },
+                            ))
+                        })),
                 )
                 .children(task.error.as_ref().map(|error| {
                     type_role(div(), TypeRole::BodySmall)
@@ -2334,20 +2442,25 @@ fn activity(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> 
                         .child(error.clone())
                 }))
                 .child(
-                    div().child(
-                        LinearProgress::new(
-                            format!("activity-progress-{}", task.instance_id),
-                            app.t("instances.install_progress_a11y"),
-                        )
-                        .value(Some(progress_value(task.percent / 100.0)))
-                        .thickness(px(4.)),
-                    ),
+                    LinearProgress::new(
+                        format!("activity-progress-{}", task.instance_id),
+                        app.t("instances.install_progress_a11y"),
+                    )
+                    .value(Some(progress_value(task.percent / 100.0)))
+                    .thickness(px(4.)),
                 )
+                .children(task.message.as_ref().map(|message| {
+                    type_role(div(), TypeRole::BodySmall)
+                        .font_family("monospace")
+                        .line_clamp(3)
+                        .text_color(color(ColorRole::ON_SURFACE_VARIANT))
+                        .child(message.clone())
+                }))
                 .children(task.error.is_some().then(|| {
                     MaterialButton::new(format!("activity-retry-{retry_id}"))
                         .variant(ButtonVariant::Text)
                         .button_size(ButtonSize::Small)
-                        .icon(material_icon("refresh", 18.0))
+                        .icon(material_icon("refresh", 20.0))
                         .child(app.t("common.retry"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.start_install(retry_id.clone(), cx)
@@ -2357,31 +2470,39 @@ fn activity(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> 
         })
         .collect();
 
+    let browse = || {
+        MaterialButton::new("activity-browse")
+            .variant(ButtonVariant::Text)
+            .icon(material_icon("grid_view", 20.0))
+            .child(app.t("activity.browse_instances"))
+            .on_click(cx.listener(|this, _, _, cx| this.set_page(Page::Instances, cx)))
+            .into_any_element()
+    };
+
     let body = div()
         .flex()
         .flex_col()
-        .gap(px(24.))
+        .gap(SPACE_XL)
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(SPACE_M)
                 .child(section_label(app, "activity.running"))
                 .child(if running.is_empty() {
-                    panel()
-                        .child(empty_state(
-                            app,
-                            "sports_esports",
-                            "activity.running_empty",
-                            "activity.running_empty_body",
-                            None,
-                        ))
-                        .into_any_element()
+                    empty_state(
+                        app,
+                        "activity-running-empty",
+                        "sports_esports",
+                        "activity.running_empty",
+                        "activity.running_empty_body",
+                        Some(browse()),
+                    )
                 } else {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(10.))
+                        .gap(SPACE_S)
                         .children(running)
                         .into_any_element()
                 }),
@@ -2390,30 +2511,29 @@ fn activity(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> 
             div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(SPACE_M)
                 .child(section_label(app, "activity.installs"))
                 .child(if installs.is_empty() {
-                    panel()
-                        .child(empty_state(
-                            app,
-                            "download",
-                            "activity.installs_empty",
-                            "activity.empty_body",
-                            None,
-                        ))
-                        .into_any_element()
+                    empty_state(
+                        app,
+                        "activity-installs-empty",
+                        "download",
+                        "activity.installs_empty",
+                        "activity.empty_body",
+                        Some(browse()),
+                    )
                 } else {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(10.))
+                        .gap(SPACE_S)
                         .children(installs)
                         .into_any_element()
                 }),
         )
         .into_any_element();
 
-    page_frame(window, header, body)
+    page_frame(app, window, header, body)
 }
 
 // ---------------------------------------------------------------------------
@@ -2423,205 +2543,252 @@ fn activity(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> 
 fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>) -> AnyElement {
     let header = page_header(app, "settings.title", "settings.subtitle", None);
 
-    let theme_chips: Vec<AnyElement> = [
-        (ThemePreference::Dark, "settings.theme_dark"),
-        (ThemePreference::Light, "settings.theme_light"),
-    ]
-    .into_iter()
-    .map(|(value, label)| {
-        FilterChip::new(format!("theme-{label}"), app.t(label))
-            .selected(app.settings.theme == value)
-            .on_toggle(cx.listener(move |this, on: &bool, window, cx| {
-                if *on && this.settings.theme != value {
-                    this.toggle_theme(window, cx);
-                }
-            }))
-            .into_any_element()
-    })
-    .collect();
+    let theme_selected = match app.settings.theme {
+        ThemePreference::Dark => "dark",
+        ThemePreference::Light => "light",
+        ThemePreference::System => "system",
+    };
+    let theme = ConnectedButtonGroup::new("settings-theme", app.t("settings.theme"))
+        .options([
+            ("dark", app.t("settings.theme_dark")),
+            ("light", app.t("settings.theme_light")),
+            ("system", app.t("settings.theme_system")),
+        ])
+        .selected(theme_selected)
+        .selection(GroupSelection::Single)
+        .segmented()
+        .on_change(cx.listener(|this, value: &SharedString, window, cx| {
+            let preference = match value.as_ref() {
+                "light" => ThemePreference::Light,
+                "system" => ThemePreference::System,
+                _ => ThemePreference::Dark,
+            };
+            this.set_theme(preference, window, cx);
+        }));
 
-    let language_chips: Vec<AnyElement> = [(Language::ZhCn, "中文"), (Language::EnUs, "English")]
-        .into_iter()
-        .map(|(value, label)| {
-            FilterChip::new(format!("lang-{label}"), label)
-                .selected(app.lang == value)
-                .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
-                    if *on && this.lang != value {
-                        this.toggle_language(cx);
-                    }
-                }))
-                .into_any_element()
+    let language_selected = match app.settings.language_mode {
+        LanguageMode::System => "system",
+        LanguageMode::ZhCn => "zh",
+        LanguageMode::EnUs => "en",
+    };
+    let language = ConnectedButtonGroup::new("settings-language", app.t("settings.language"))
+        .options([
+            ("system", app.t("settings.language_system")),
+            ("zh", "中文"),
+            ("en", "English"),
+        ])
+        .selected(language_selected)
+        .selection(GroupSelection::Single)
+        .segmented()
+        .on_change(cx.listener(|this, value: &SharedString, window, cx| {
+            let mode = match value.as_ref() {
+                "zh" => LanguageMode::ZhCn,
+                "en" => LanguageMode::EnUs,
+                _ => LanguageMode::System,
+            };
+            this.set_language_mode(mode, window, cx);
+        }));
+
+    let motion_selected = match app.settings.reduce_motion {
+        ReduceMotion::System => "system",
+        ReduceMotion::On => "on",
+        ReduceMotion::Off => "off",
+    };
+    let motion = ConnectedButtonGroup::new("settings-motion", app.t("settings.motion"))
+        .options([
+            ("system", app.t("settings.motion_system")),
+            ("on", app.t("settings.motion_on")),
+            ("off", app.t("settings.motion_off")),
+        ])
+        .selected(motion_selected)
+        .selection(GroupSelection::Single)
+        .segmented()
+        .on_change(cx.listener(|this, value: &SharedString, _, cx| {
+            let preference = match value.as_ref() {
+                "on" => ReduceMotion::On,
+                "off" => ReduceMotion::Off,
+                _ => ReduceMotion::System,
+            };
+            this.set_reduce_motion_preference(preference, cx);
+        }));
+
+    let scale_percent = (app.settings.text_scale * 100.).round() as u32;
+    let scale_selected = format!("{scale_percent}");
+    let text_scale = ConnectedButtonGroup::new("settings-text-scale", app.t("settings.text_scale"))
+        .options([
+            ("100", "100%"),
+            ("125", "125%"),
+            ("150", "150%"),
+            ("200", "200%"),
+        ])
+        .selected(scale_selected)
+        .selection(GroupSelection::Single)
+        .segmented()
+        .on_change(cx.listener(|this, value: &SharedString, window, cx| {
+            if let Ok(percent) = value.parse::<f32>() {
+                this.set_text_scale(percent / 100., window, cx);
+            }
+        }));
+
+    let source_selected = match app.settings.download_source {
+        DownloadSource::Auto => "auto",
+        DownloadSource::Bmcl => "bmcl",
+        DownloadSource::Official => "official",
+    };
+    let source = ConnectedButtonGroup::new("settings-source", app.t("settings.download_source"))
+        .options([
+            ("auto", app.t("settings.download_auto")),
+            ("bmcl", app.t("settings.download_bmcl")),
+            ("official", app.t("settings.download_official")),
+        ])
+        .selected(source_selected)
+        .selection(GroupSelection::Single)
+        .segmented()
+        .on_change(cx.listener(|this, value: &SharedString, _, cx| {
+            let source = match value.as_ref() {
+                "bmcl" => DownloadSource::Bmcl,
+                "official" => DownloadSource::Official,
+                _ => DownloadSource::Auto,
+            };
+            if this.settings.download_source != source {
+                this.settings.download_source = source;
+                let _ = core_settings::save(&this.paths, &this.settings);
+                cx.notify();
+            }
+        }));
+
+    let memory_value = app.settings.instance_defaults.memory_mb;
+    let memory_unit = app.t("settings.memory_value").to_string();
+    let memory = MaterialSlider::new(&app.memory_slider, app.t("settings.memory"))
+        .format(move |value| {
+            memory_unit
+                .replace("{mb}", &format!("{:.0}", value.round()))
+                .into()
         })
-        .collect();
-
-    let source_chips: Vec<AnyElement> = [
-        (DownloadSource::Auto, "settings.download_auto"),
-        (DownloadSource::Bmcl, "settings.download_bmcl"),
-        (DownloadSource::Official, "settings.download_official"),
-    ]
-    .into_iter()
-    .map(|(value, label)| {
-        FilterChip::new(format!("source-{label}"), app.t(label))
-            .selected(app.settings.download_source == value)
-            .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
-                if *on && this.settings.download_source != value {
-                    this.settings.download_source = value;
-                    let _ = core_settings::save(&this.paths, &this.settings);
-                    cx.notify();
-                }
-            }))
-            .into_any_element()
-    })
-    .collect();
-
-    let motion_chips: Vec<AnyElement> = [
-        (
-            crate::core::settings::ReduceMotion::System,
-            "settings.motion_system",
-        ),
-        (
-            crate::core::settings::ReduceMotion::On,
-            "settings.motion_on",
-        ),
-        (
-            crate::core::settings::ReduceMotion::Off,
-            "settings.motion_off",
-        ),
-    ]
-    .into_iter()
-    .map(|(value, label)| {
-        FilterChip::new(format!("motion-{label}"), app.t(label))
-            .selected(app.settings.reduce_motion == value)
-            .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
-                if *on {
-                    this.settings.reduce_motion = value;
-                    let _ = core_settings::save(&this.paths, &this.settings);
-                    cx.set_reduce_motion(value == crate::core::settings::ReduceMotion::On);
-                    cx.notify();
-                }
-            }))
-            .into_any_element()
-    })
-    .collect();
-
-    let memory_chips: Vec<AnyElement> = [2048u32, 4096, 6144, 8192, 12288]
-        .into_iter()
-        .map(|mb| {
-            FilterChip::new(format!("default-memory-{mb}"), format!("{mb} MB"))
-                .selected(app.settings.instance_defaults.memory_mb == mb)
-                .on_toggle(cx.listener(move |this, on: &bool, _, cx| {
-                    if *on {
-                        this.settings.instance_defaults.memory_mb = mb;
-                        let _ = core_settings::save(&this.paths, &this.settings);
-                        cx.notify();
-                    }
-                }))
-                .into_any_element()
-        })
-        .collect();
+        .size(SliderSize::Medium);
 
     let java_rows: Vec<AnyElement> = app
         .java_runtimes
         .iter()
-        .map(|runtime| {
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(12.))
-                .py(px(6.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w_0()
-                        .child(
-                            type_role(div(), TypeRole::TitleSmall)
-                                .child(format!("Java {}", runtime.major)),
-                        )
-                        .child(muted(runtime.path.clone())),
+        .enumerate()
+        .map(|(index, runtime)| {
+            let row = ListItem::new(
+                format!("java-runtime-{index}"),
+                app.t("settings.java_version")
+                    .replace("{major}", &runtime.major.to_string()),
+            )
+            .leading(ListLeading::Tinted(
+                material_icon("coffee", 24.0),
+                Tint::Amber,
+                40.,
+            ))
+            .supporting(runtime.path.clone())
+            .container(ColorRole::SURFACE_CONTAINER_LOW);
+            let trailing = runtime.managed.then(|| {
+                Badge::large(
+                    format!("java-managed-{index}"),
+                    app.t("settings.java_managed"),
                 )
-                .children(runtime.managed.then(|| {
-                    chip(
-                        app.t("settings.java_managed"),
-                        ColorRole::TERTIARY_CONTAINER,
-                        ColorRole::ON_TERTIARY_CONTAINER,
-                    )
-                    .into_any_element()
-                }))
+                .color(BadgeColor::Tertiary)
                 .into_any_element()
+            });
+            row_with_action(row, trailing)
         })
         .collect();
 
-    let settings_body = div()
+    let body = div()
         .flex()
         .flex_col()
-        .gap(px(16.))
+        .gap(SPACE_L)
         .child(
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(16.))
+                .gap(SPACE_L)
                 .child(section_label(app, "settings.appearance"))
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(8.))
-                        .child(muted(app.t("settings.theme")))
-                        .child(div().flex().flex_wrap().gap(px(8.)).children(theme_chips)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.))
-                        .child(muted(app.t("settings.language")))
+                        .gap(SPACE_S)
+                        .child(muted(app.t("settings.text_scale")))
+                        .child(muted(app.t("settings.text_scale_hint")))
+                        .child(text_scale)
                         .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(8.))
-                                .children(language_chips),
+                            MaterialButton::new("settings-text-scale-reset")
+                                .variant(ButtonVariant::Text)
+                                .button_size(ButtonSize::Small)
+                                .child(app.t("settings.text_scale_reset"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.reset_text_scale(window, cx)
+                                })),
                         ),
                 )
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(8.))
+                        .gap(SPACE_S)
+                        .child(muted(app.t("settings.theme")))
+                        .child(theme),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_S)
+                        .child(muted(app.t("settings.language")))
+                        .child(language),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_S)
                         .child(muted(app.t("settings.motion")))
-                        .child(div().flex().flex_wrap().gap(px(8.)).children(motion_chips)),
+                        .child(motion),
                 ),
         )
         .child(
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(16.))
+                .gap(SPACE_L)
                 .child(section_label(app, "settings.downloads"))
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(8.))
+                        .gap(SPACE_S)
                         .child(muted(app.t("settings.download_source")))
-                        .child(div().flex().flex_wrap().gap(px(8.)).children(source_chips)),
+                        .child(source),
                 )
                 .child(
                     div()
                         .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(muted(app.t("settings.memory")))
-                        .child(div().flex().flex_wrap().gap(px(8.)).children(memory_chips)),
+                        .flex_col()
+                        .gap(SPACE_S)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(muted(app.t("settings.memory")))
+                                .child(
+                                    type_role(div(), TypeRole::TitleSmall).child(
+                                        app.t("settings.memory_value")
+                                            .replace("{mb}", &memory_value.to_string()),
+                                    ),
+                                ),
+                        )
+                        .child(memory),
                 ),
         )
         .child(
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(SPACE_M)
                 .child(
                     div()
                         .flex()
@@ -2632,36 +2799,41 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                             MaterialButton::new("java-rescan")
                                 .variant(ButtonVariant::Text)
                                 .button_size(ButtonSize::ExtraSmall)
-                                .icon(material_icon("refresh", 16.0))
+                                .icon(material_icon("refresh", 20.0))
                                 .child(app.t("settings.java_rescan"))
                                 .on_click(cx.listener(|this, _, _, cx| this.refresh_java(cx))),
                         ),
                 )
                 .child(
-                    MaterialSwitch::new("java-auto-download", app.t("settings.java_auto_download"))
-                        .checked(app.settings.java.auto_download)
-                        .on_change(cx.listener(|this, on: &bool, _, cx| {
-                            this.settings.java.auto_download = *on;
+                    ListItem::new("java-auto-download", app.t("settings.java_auto_download"))
+                        .supporting(app.t("settings.java_auto_download_hint"))
+                        .trailing(ListTrailing::Switch(app.settings.java.auto_download))
+                        .container(ColorRole::SURFACE_CONTAINER_LOW)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.settings.java.auto_download = !this.settings.java.auto_download;
                             let _ = core_settings::save(&this.paths, &this.settings);
                             cx.notify();
                         })),
                 )
                 .child(section_label(app, "settings.java_detected"))
-                .child(if java_rows.is_empty() {
-                    muted(app.t("common.loading")).into_any_element()
+                .child(if app.loading.java {
+                    loading_panel(app, "java-loading", "common.loading")
+                } else if java_rows.is_empty() {
+                    muted(app.t("common.empty")).into_any_element()
                 } else {
                     div()
                         .flex()
                         .flex_col()
+                        .gap(SPACE_S)
                         .children(java_rows)
                         .into_any_element()
                 }),
         )
         .child(
-            panel()
+            card_surface()
                 .flex()
                 .flex_col()
-                .gap(px(10.))
+                .gap(SPACE_M)
                 .child(section_label(app, "settings.about"))
                 .child(
                     div()
@@ -2675,31 +2847,30 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(2.))
+                        .gap(SPACE_XS)
                         .child(muted(app.t("settings.data_dir")))
-                        .child(
-                            type_role(div(), TypeRole::BodySmall)
-                                .text_color(color(ColorRole::ON_SURFACE_VARIANT))
-                                .child(app.paths.root().display().to_string()),
-                        ),
+                        .child(meta_text(app.paths.root().display().to_string())),
                 )
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_between()
-                        .gap(px(12.))
+                        .gap(SPACE_M)
+                        .flex_wrap()
                         .child(if app.loading.update {
                             muted(app.t("settings.checking")).into_any_element()
                         } else if let Some(update) = &app.update {
                             div()
                                 .flex()
                                 .flex_col()
-                                .child(type_role(div(), TypeRole::TitleSmall).child(format!(
-                                    "{} {}",
-                                    app.t("settings.update_available"),
-                                    update.version
-                                )))
+                                .child(
+                                    type_role(div(), TypeRole::TitleSmall).child(
+                                        app.t("settings.update_available_version")
+                                            .replace("{label}", app.t("settings.update_available"))
+                                            .replace("{version}", &update.version),
+                                    ),
+                                )
                                 .child(muted(update.tag.clone()))
                                 .into_any_element()
                         } else if app.update_checked {
@@ -2710,12 +2881,12 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                         .child(
                             div()
                                 .flex()
-                                .gap(px(8.))
+                                .gap(SPACE_S)
                                 .child(
                                     MaterialButton::new("check-updates")
                                         .variant(ButtonVariant::Text)
                                         .button_size(ButtonSize::Small)
-                                        .icon(material_icon("refresh", 18.0))
+                                        .icon(material_icon("refresh", 20.0))
                                         .child(app.t("settings.check_updates"))
                                         .disabled(app.loading.update)
                                         .on_click(
@@ -2725,9 +2896,9 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
                                 .children(app.update.as_ref().map(|update| {
                                     let url = update.page_url.clone();
                                     MaterialButton::new("open-release")
-                                        .variant(ButtonVariant::Filled)
+                                        .variant(ButtonVariant::Tonal)
                                         .button_size(ButtonSize::Small)
-                                        .icon(material_icon("open_in_new", 18.0))
+                                        .icon(material_icon("open_in_new", 20.0))
                                         .child(app.t("settings.open_release"))
                                         .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
                                         .into_any_element()
@@ -2737,6 +2908,29 @@ fn settings_page(app: &mut Yuhina, window: &mut Window, cx: &mut Context<Yuhina>
         )
         .into_any_element();
 
-    let _ = window;
-    page_frame(window, header, settings_body)
+    page_frame(app, window, header, body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PAGE_GUTTER, RADIUS_CARD, SPACE_XL, columns_for};
+    use gpui_kit_material::components::WindowWidthClass;
+    use gpui_kit_material::tokens::typography::BASE_PX;
+
+    #[test]
+    fn the_card_grid_uses_the_window_class_not_the_item_count() {
+        assert_eq!(columns_for(WindowWidthClass::Compact), 1);
+        assert_eq!(columns_for(WindowWidthClass::Medium), 2);
+        assert_eq!(columns_for(WindowWidthClass::Expanded), 2);
+        assert_eq!(columns_for(WindowWidthClass::Large), 3);
+        assert_eq!(columns_for(WindowWidthClass::ExtraLarge), 3);
+    }
+
+    #[test]
+    fn page_geometry_tokens_are_rem_based() {
+        // 32dp at the 100% baseline; the same token grows at 200%.
+        assert_eq!(PAGE_GUTTER.0, 32.0 / BASE_PX);
+        assert_eq!(SPACE_XL.0, 24.0 / BASE_PX);
+        assert_eq!(RADIUS_CARD.0, 24.0 / BASE_PX);
+    }
 }

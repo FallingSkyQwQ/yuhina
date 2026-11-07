@@ -8772,6 +8772,7 @@ dependencies = [
  "keyring",
  "md-5",
  "percent-encoding",
+ "raw-window-handle",
  "regex",
  "serde",
  "serde_json",

@@ -2,16 +2,27 @@ use crate::core::settings::Language;
 
 /// Every user-facing string lives here. `zh-CN` is the default; `en-US` is
 /// complete so the layout can be checked at +30% string length.
+///
+/// A missing key is a defect, not a translation: debug builds and tests panic
+/// instead of painting an ellipsis that hides the gap.
 pub fn tr(lang: Language, key: &str) -> &'static str {
     let table: &'static [(&'static str, &'static str)] = match lang {
         Language::ZhCn => ZH,
         Language::EnUs => EN,
     };
-    table
-        .iter()
-        .find(|(candidate, _)| *candidate == key)
-        .map(|(_, value)| *value)
-        .unwrap_or("…")
+    match table.iter().find(|(candidate, _)| *candidate == key) {
+        Some((_, value)) => value,
+        None => {
+            #[cfg(debug_assertions)]
+            {
+                panic!("missing i18n key: {key}");
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                "…"
+            }
+        }
+    }
 }
 
 pub const ZH: &[(&str, &str)] = &[
@@ -80,6 +91,18 @@ pub const ZH: &[(&str, &str)] = &[
     ("common.details", "详情"),
     ("common.none", "无"),
     ("common.unknown", "未知"),
+    ("common.more", "更多"),
+    ("common.active", "当前"),
+    ("common.running", "运行中"),
+    ("common.not_installed", "未安装"),
+    ("common.dismiss", "关闭"),
+    ("common.busy", "请稍候…"),
+    ("common.creating", "创建中…"),
+    ("common.adding", "添加中…"),
+    ("common.importing", "导入中…"),
+    ("common.removing", "移除中…"),
+    ("common.signing_in", "登录中…"),
+    ("common.percent", "{p}%"),
     ("common.offline_hint", "请检查网络连接后重试。"),
     ("instances.title", "实例"),
     (
@@ -112,6 +135,12 @@ pub const ZH: &[(&str, &str)] = &[
     ("instances.tab.settings", "设置"),
     ("instances.sections", "实例分区"),
     ("instances.name", "名称"),
+    ("instances.name_invalid", "名称需为 1–64 个字符。"),
+    ("instances.row_meta", "{version} · {loader} · {mb} MB"),
+    ("instances.memory_value", "{mb} MB"),
+    ("instances.install_detail", "{phase} · {percent}%"),
+    ("instances.install_output", "安装器输出"),
+    ("instances.java_required", "需要 Java {major}"),
     ("instances.create_title", "创建实例"),
     ("instances.name_placeholder", "我的生存世界"),
     ("instances.version_hint", "选择 Minecraft 版本"),
@@ -170,6 +199,7 @@ pub const ZH: &[(&str, &str)] = &[
     ("backups.export", "导出实例"),
     ("backups.import", "导入实例"),
     ("backups.export_done", "实例已导出："),
+    ("backups.export_done_name", "实例已导出：{name}"),
     ("backups.imported_toast", "实例已导入"),
     ("backups.import_path", "导出文件路径"),
     (
@@ -190,6 +220,10 @@ pub const ZH: &[(&str, &str)] = &[
     ("backups.restored", "备份已恢复"),
     ("backups.untitled", "未命名备份"),
     ("backups.files", "个文件"),
+    (
+        "backups.summary_format",
+        "{time} · {bytes} · {files} 个文件",
+    ),
     ("backups.restore", "恢复"),
     ("backups.delete", "删除备份"),
     ("backups.empty", "还没有备份"),
@@ -233,6 +267,10 @@ pub const ZH: &[(&str, &str)] = &[
     ("accounts.microsoft_opening", "正在打开浏览器…"),
     ("accounts.email", "邮箱"),
     ("accounts.password", "密码"),
+    ("accounts.server_url_required", "请填写验证服务器地址。"),
+    ("accounts.email_required", "请填写邮箱。"),
+    ("accounts.password_required", "请填写密码。"),
+    ("accounts.signing_in", "正在登录…"),
     ("accounts.server_url", "服务器地址"),
     ("accounts.server_url_placeholder", "https://littleskin.cn"),
     ("accounts.login", "登录"),
@@ -246,6 +284,11 @@ pub const ZH: &[(&str, &str)] = &[
     ("servers.name", "名称"),
     ("servers.address", "地址"),
     ("servers.address_placeholder", "play.example.com:25565"),
+    ("servers.address_required", "请填写服务器地址。"),
+    (
+        "servers.status_format",
+        "{motd} · {players}/{max} · {latency} ms · {version}",
+    ),
     ("servers.ping", "刷新状态"),
     ("servers.join", "加入"),
     ("servers.online", "在线"),
@@ -259,6 +302,7 @@ pub const ZH: &[(&str, &str)] = &[
     ("library.title", "资源库"),
     ("library.subtitle", "从 Modrinth 浏览并安装内容。"),
     ("library.search_placeholder", "搜索 Modrinth…"),
+    ("library.result_count", "{count} 个结果"),
     ("library.install", "安装"),
     ("library.installed", "已安装"),
     ("library.downloads", "下载"),
@@ -274,6 +318,7 @@ pub const ZH: &[(&str, &str)] = &[
     ("library.no_instance", "先创建一个实例"),
     ("library.searching", "搜索中…"),
     ("library.install_done", "内容已安装"),
+    ("library.install_done_count", "内容已安装（{count} 个文件）"),
     ("library.import", "导入整合包"),
     ("library.import_title", "导入 .mrpack"),
     (
@@ -300,6 +345,10 @@ pub const ZH: &[(&str, &str)] = &[
         "从实例页面启动游戏后，这里会显示运行状态和日志。",
     ),
     ("activity.installs_empty", "没有安装任务"),
+    ("activity.install_output", "安装器输出"),
+    ("activity.install_format", "{name} · {phase}"),
+    ("activity.dismiss", "清除已完成"),
+    ("activity.browse_instances", "查看实例"),
     ("settings.java_managed", "已托管"),
     ("settings.title", "设置"),
     ("settings.subtitle", "外观、下载、Java 与数据。"),
@@ -320,10 +369,24 @@ pub const ZH: &[(&str, &str)] = &[
     ("settings.download_bmcl", "仅 BMCLAPI"),
     ("settings.download_official", "仅官方"),
     ("settings.java", "Java 运行时"),
+    ("settings.java_version", "Java {major}"),
+    ("settings.data_dir_format", "{label}：{path}"),
     ("settings.java_auto_download", "自动下载缺失的 Java"),
     ("settings.java_detected", "已检测到的运行时"),
     ("settings.java_rescan", "重新检测"),
     ("settings.memory", "默认内存"),
+    ("settings.memory_value", "{mb} MB"),
+    ("settings.text_scale", "文字大小"),
+    (
+        "settings.text_scale_hint",
+        "应用内文字与控件同步缩放，最高 200%。",
+    ),
+    ("settings.text_scale_reset", "恢复默认"),
+    ("settings.language_system", "跟随系统"),
+    (
+        "settings.java_auto_download_hint",
+        "缺少清单要求的 Java 时自动下载运行时。",
+    ),
     ("settings.about", "关于"),
     ("settings.version", "版本"),
     ("settings.data_dir", "数据目录"),
@@ -331,11 +394,20 @@ pub const ZH: &[(&str, &str)] = &[
     ("settings.checking", "检查中…"),
     ("settings.up_to_date", "已是最新版本"),
     ("settings.update_available", "发现新版本"),
+    ("settings.update_available_version", "{label} {version}"),
     ("settings.open_release", "打开下载页"),
     ("dialog.create_instance", "创建实例"),
     ("dialog.add_account", "添加账户"),
     ("dialog.add_server", "添加服务器"),
     ("dialog.delete_instance", "删除实例"),
+    ("dialog.delete_server", "移除服务器"),
+    ("dialog.remove_account", "移除账户"),
+    (
+        "dialog.delete_instance_named",
+        "将删除“{name}”及其游戏目录。此操作不可撤销。",
+    ),
+    ("dialog.delete_server_named", "将从收藏中移除“{name}”。"),
+    ("dialog.remove_account_named", "将从此设备移除“{name}”。"),
     ("dialog.import_instance", "导入实例"),
     ("dialog.restore_backup", "恢复备份"),
     (
@@ -458,6 +530,18 @@ pub const EN: &[(&str, &str)] = &[
     ("common.details", "Details"),
     ("common.none", "None"),
     ("common.unknown", "Unknown"),
+    ("common.more", "More"),
+    ("common.active", "Active"),
+    ("common.running", "Running"),
+    ("common.not_installed", "Not installed"),
+    ("common.dismiss", "Dismiss"),
+    ("common.busy", "Please wait…"),
+    ("common.creating", "Creating…"),
+    ("common.adding", "Adding…"),
+    ("common.importing", "Importing…"),
+    ("common.removing", "Removing…"),
+    ("common.signing_in", "Signing in…"),
+    ("common.percent", "{p}%"),
     (
         "common.offline_hint",
         "Check your connection and try again.",
@@ -496,6 +580,15 @@ pub const EN: &[(&str, &str)] = &[
     ("instances.tab.settings", "Settings"),
     ("instances.sections", "Instance sections"),
     ("instances.name", "Name"),
+    (
+        "instances.name_invalid",
+        "Use 1–64 characters for the name.",
+    ),
+    ("instances.row_meta", "{version} · {loader} · {mb} MB"),
+    ("instances.memory_value", "{mb} MB"),
+    ("instances.install_detail", "{phase} · {percent}%"),
+    ("instances.install_output", "Installer output"),
+    ("instances.java_required", "Requires Java {major}"),
     ("instances.create_title", "Create instance"),
     ("instances.name_placeholder", "My survival world"),
     ("instances.version_hint", "Choose a Minecraft version"),
@@ -560,6 +653,7 @@ pub const EN: &[(&str, &str)] = &[
     ("backups.export", "Export instance"),
     ("backups.import", "Import instance"),
     ("backups.export_done", "Instance exported:"),
+    ("backups.export_done_name", "Instance exported: {name}"),
     ("backups.imported_toast", "Instance imported"),
     ("backups.import_path", "Export file path"),
     (
@@ -586,6 +680,7 @@ pub const EN: &[(&str, &str)] = &[
     ("backups.restored", "Backup restored"),
     ("backups.untitled", "Untitled backup"),
     ("backups.files", "files"),
+    ("backups.summary_format", "{time} · {bytes} · {files} files"),
     ("backups.restore", "Restore"),
     ("backups.delete", "Delete backup"),
     ("backups.empty", "No backups yet"),
@@ -641,6 +736,13 @@ pub const EN: &[(&str, &str)] = &[
     ("accounts.microsoft_opening", "Opening your browser…"),
     ("accounts.email", "Email"),
     ("accounts.password", "Password"),
+    (
+        "accounts.server_url_required",
+        "Enter the authentication server URL.",
+    ),
+    ("accounts.email_required", "Enter your email."),
+    ("accounts.password_required", "Enter your password."),
+    ("accounts.signing_in", "Signing in…"),
     ("accounts.server_url", "Server URL"),
     ("accounts.server_url_placeholder", "https://littleskin.cn"),
     ("accounts.login", "Sign in"),
@@ -660,6 +762,11 @@ pub const EN: &[(&str, &str)] = &[
     ("servers.name", "Name"),
     ("servers.address", "Address"),
     ("servers.address_placeholder", "play.example.com:25565"),
+    ("servers.address_required", "Enter the server address."),
+    (
+        "servers.status_format",
+        "{motd} · {players}/{max} · {latency} ms · {version}",
+    ),
     ("servers.ping", "Refresh status"),
     ("servers.join", "Join"),
     ("servers.online", "Online"),
@@ -679,6 +786,7 @@ pub const EN: &[(&str, &str)] = &[
         "Browse and install content from Modrinth.",
     ),
     ("library.search_placeholder", "Search Modrinth…"),
+    ("library.result_count", "{count} results"),
     ("library.install", "Install"),
     ("library.installed", "Installed"),
     ("library.downloads", "Downloads"),
@@ -697,6 +805,10 @@ pub const EN: &[(&str, &str)] = &[
     ("library.no_instance", "Create an instance first"),
     ("library.searching", "Searching…"),
     ("library.install_done", "Content installed"),
+    (
+        "library.install_done_count",
+        "Content installed ({count} files)",
+    ),
     ("library.import", "Import modpack"),
     ("library.import_title", "Import .mrpack"),
     (
@@ -726,6 +838,10 @@ pub const EN: &[(&str, &str)] = &[
         "Launch a game from Instances to see its status and logs here.",
     ),
     ("activity.installs_empty", "No installs are running"),
+    ("activity.install_output", "Installer output"),
+    ("activity.install_format", "{name} · {phase}"),
+    ("activity.dismiss", "Clear finished"),
+    ("activity.browse_instances", "Browse instances"),
     ("settings.java_managed", "Managed"),
     ("settings.title", "Settings"),
     ("settings.subtitle", "Appearance, downloads, Java and data."),
@@ -746,6 +862,8 @@ pub const EN: &[(&str, &str)] = &[
     ("settings.download_bmcl", "BMCLAPI only"),
     ("settings.download_official", "Official only"),
     ("settings.java", "Java runtime"),
+    ("settings.java_version", "Java {major}"),
+    ("settings.data_dir_format", "{label}: {path}"),
     (
         "settings.java_auto_download",
         "Download missing Java automatically",
@@ -753,6 +871,18 @@ pub const EN: &[(&str, &str)] = &[
     ("settings.java_detected", "Detected runtimes"),
     ("settings.java_rescan", "Rescan"),
     ("settings.memory", "Default memory"),
+    ("settings.memory_value", "{mb} MB"),
+    ("settings.text_scale", "Text size"),
+    (
+        "settings.text_scale_hint",
+        "Scales text and controls together, up to 200%.",
+    ),
+    ("settings.text_scale_reset", "Reset"),
+    ("settings.language_system", "System"),
+    (
+        "settings.java_auto_download_hint",
+        "Download a runtime when the required Java is missing.",
+    ),
     ("settings.about", "About"),
     ("settings.version", "Version"),
     ("settings.data_dir", "Data directory"),
@@ -760,11 +890,26 @@ pub const EN: &[(&str, &str)] = &[
     ("settings.checking", "Checking…"),
     ("settings.up_to_date", "You are up to date"),
     ("settings.update_available", "Update available"),
+    ("settings.update_available_version", "{label} {version}"),
     ("settings.open_release", "Open download page"),
     ("dialog.create_instance", "Create instance"),
     ("dialog.add_account", "Add account"),
     ("dialog.add_server", "Add server"),
     ("dialog.delete_instance", "Delete instance"),
+    ("dialog.delete_server", "Remove server"),
+    ("dialog.remove_account", "Remove account"),
+    (
+        "dialog.delete_instance_named",
+        "This deletes “{name}” and its game folder. This cannot be undone.",
+    ),
+    (
+        "dialog.delete_server_named",
+        "This removes “{name}” from your saved servers.",
+    ),
+    (
+        "dialog.remove_account_named",
+        "This removes “{name}” from this device.",
+    ),
     ("dialog.import_instance", "Import instance"),
     ("dialog.restore_backup", "Restore backup"),
     (
@@ -846,6 +991,46 @@ mod tests {
             assert!(
                 ZH.iter().any(|(candidate, _)| candidate == key),
                 "missing zh-CN key: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_key_resolves_in_both_locales_without_the_fallback() {
+        for (key, _) in ZH {
+            assert!(!tr(Language::ZhCn, key).is_empty(), "{key}");
+            assert!(!tr(Language::EnUs, key).is_empty(), "{key}");
+        }
+        for (key, _) in EN {
+            assert!(!tr(Language::ZhCn, key).is_empty(), "{key}");
+            assert!(!tr(Language::EnUs, key).is_empty(), "{key}");
+        }
+    }
+
+    #[test]
+    fn format_placeholders_match_across_locales() {
+        for (key, zh) in ZH {
+            let Some((_, en)) = EN.iter().find(|(candidate, _)| candidate == key) else {
+                continue;
+            };
+            let placeholders = |text: &str| {
+                let mut found: Vec<String> = Vec::new();
+                let mut rest = text;
+                while let Some(start) = rest.find('{') {
+                    let after = &rest[start + 1..];
+                    let Some(end) = after.find('}') else {
+                        break;
+                    };
+                    found.push(after[..end].to_string());
+                    rest = &after[end + 1..];
+                }
+                found.sort_unstable();
+                found
+            };
+            assert_eq!(
+                placeholders(zh),
+                placeholders(en),
+                "placeholder mismatch for {key}"
             );
         }
     }
