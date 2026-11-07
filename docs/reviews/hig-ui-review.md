@@ -18,11 +18,11 @@ Apple's Liquid Glass, bezelled macOS toolbars, traffic lights, and Mac-only wind
 
 ## Executive summary
 
-This is a real Material 3 Expressive launcher, not a themed mock-up. The tonal-surface hierarchy is coherent, the Expressive teal scheme is applied through semantic roles, the adaptive rail → bar model now keeps five destinations reachable, and the kit's buttons, chips, fields, tabs, switch, avatar, progress and snackbar are used where they are used. The previous audit's release blockers (Baseline scheme, seven destinations, drawer on desktop, empty create dialog) are genuinely fixed.
+This is a real Material 3 Expressive launcher, not a themed mock-up. The tonal-surface hierarchy is coherent, the Expressive teal scheme is applied through semantic roles, the adaptive rail → bar model now keeps five destinations reachable, and the kit's buttons, chips, fields, tabs, switch, avatar, progress and snackbar are used consistently where they appear. The previous audit's release blockers (Baseline scheme, seven destinations, drawer on desktop, empty create dialog) are genuinely fixed.
 
 The HIG bar exposes three systemic problems that the Material-only audits did not:
 
-1. **The app still has no reachable text-size setting.** `init_component_theme(..., 1.0, ...)` is hard-coded, there is no 100/150/200% control, and page geometry is in `px`. HIG Accessibility asks for at least 200% enlargement; the product spec itself requires the layout to tolerate 200%. At 200% the kit controls would grow while page padding and row geometry would not.
+1. **The app still has no reachable text-size setting.** `init_component_theme(..., 1.0, ...)` is hard-coded, there is no 100/150/200% control, and page geometry is in `px`. HIG Accessibility asks for at least 200% enlargement; the product spec itself requires the layout to tolerate 200%. At 200% the text grows (page text is rem-based) while page padding and row geometry stay in `px`.
 2. **The primary-action hierarchy is flat.** Home has a filled Create + filled Play in the hero, a filled Play on every recent card, and a global FAB. Instances has a filled header Create, a tonal Import, a rail FAB, and a filled Play on every row. HIG Buttons asks for one or two prominent buttons per view. The compact FAB also physically covers a row's Play button at 500 px.
 3. **A bespoke control layer remains on top of a complete component kit.** Instances, accounts, servers, library results, backups and Java runtimes are hand-built `div` rows; Library is a text field plus a Search button; Settings and dialogs use `FilterChip` as radio buttons; the only `ListItem` in the product is in the Files tab. This is why row height, focus, press feedback and truncation vary from page to page.
 
@@ -54,7 +54,7 @@ The HIG bar exposes three systemic problems that the Material-only audits did no
 
 - `src/main.rs:50` — `theme::init_component_theme(scheme, 1.0, cx);` The kit's rem scale is pinned at 1.0.
 - `src/main.rs:51` — only `ReduceMotion::On` reaches `cx.set_reduce_motion`; there is no analogous text-scale path.
-- `src/ui/pages.rs:33-64` — the page frame uses fixed `px(32.)` gutters, `max_w(px(1120.))`, and a fixed `pb(px(160.))` at compact. `pages.rs` has 29 explicit `px()` geometry calls and only the icons go through `rem()` (`mod.rs:2269-2271`).
+- `src/ui/pages.rs:33-64` — the page frame uses fixed `px(32.)` gutters, `max_w(px(1120.))`, and a fixed `pb(px(160.))` at compact. `pages.rs` contains 158 `px()` occurrences for geometry; only the text roles and the icons (`mod.rs:2269-2271`) are rem-based.
 - `src/ui/pages.rs:2423-2742` — the Settings page has theme, language, motion, download source, memory and Java sections, but no text-size control. The product spec (`docs/product-spec.md:119-122`) and `docs/design-system.md:42-44` both require 200% tolerance.
 - The committed captures are all at 100%; there is no 150% or 200% capture in any review folder.
 
@@ -220,7 +220,7 @@ The title is the screen's top-level heading, and it is printed twice with ~88 px
 - Minecraft version: `ExposedDropdown` with `options(version_options(app))`, `.selected(...)`, `.on_select(...)`, `.menu_max_height(320.)`. Keep the curated order; add a search field only if the list becomes the full manifest.
 - Loader: `ConnectedButtonGroup` with `GroupSelection::Single`, `.segmented()`, 5 options. This is the correct "one of five" control.
 - Forge/NeoForge build: `ExposedDropdown` (the list can be long); put the recommended build first.
-- Memory: `MaterialSlider` (1024–16384, 512 step) with a live "4096 MB" label, or `ExposedDropdown` for presets. Do not use four chips.
+- Memory: `MaterialSlider` driven by a `SliderState` with a 1024–16384 range and 512 MB step, plus a live "4096 MB" label; or `ExposedDropdown` for presets. Do not use four chips.
 - Call `.track_body_scroll(&handle)` and add `pb(px(24.))` to `dialog_content` so a line is never cut at the footer; keep the action row visible.
 
 **Acceptance:** create dialog ≤ 560 dp wide at 800+ and full-screen at <600; at most 8 focus stops before the footer actions; no half-clipped line at 800×600 or 200% text; version and loader values remain visible after selection.
@@ -436,8 +436,7 @@ The caption is the highest-contrast band on the light screen, so the window read
 
 **Concrete fix**
 
-- Sync the native window appearance to the app theme. On Windows, set the DWM immersive dark-mode attribute from the theme state (and re-apply on toggle); on macOS, set the window appearance. Do not hand-draw caption buttons.
-- If a custom bar is desired, use the kit's `TitleBar`/`CaptionLabels`/`Caption` with `appears_transparent: true`; otherwise keep the native frame and only fix its appearance.
+- Prefer the kit's `TitleBar`/`CaptionLabels`/`Caption` with `appears_transparent: true` so the caption is painted with `ColorRole::SURFACE` in both themes; it already provides the window controls. If the native frame is kept, sync the platform appearance to the theme where the windowing layer exposes it. Do not hand-draw caption buttons or add a platform-specific dependency for this.
 - Set the window title to the current page or instance (e.g. "Instances", or the instance name in detail), keeping the app name only in the executable/taskbar identity.
 - Set a minimum window size (at least 480×600; better 800×600 if the product wants the promised desktop floor) and clamp the initial bounds to the work area.
 - Keep the app icon work; it is a HIG-positive change.
@@ -715,7 +714,7 @@ Six equal-weight actions flatten the hierarchy, put a destructive Delete one mis
 
 #### HIG-22 — Typography family, CJK fallback, metadata size, and logs
 
-**Evidence:** `src/ui/mod.rs:2224` hard-codes `.font_family("Roboto")`; no font is bundled (`Cargo.toml` has no font asset, `design/` has only brand SVGs). The kit's `TypeScale` also uses a family; CJK falls back per-glyph. `pages.rs:1033-1035` uses `BodySmall` + 18 dp for the in-app log preview but not `monospace`; only the file preview (`pages.rs:1508`) uses monospace. Instance metadata uses `muted`/`BodySmall` at 12 px (`pages.rs:121-125`) for version, loader and memory, which is the primary identifying information in a list.
+**Evidence:** `src/ui/mod.rs:2224` hard-codes `.font_family("Roboto")`; no application font asset is bundled (`design/` has only brand SVGs and `Cargo.toml` adds no font dependency). The kit's `TypeScale` also uses a family; CJK falls back per-glyph. `pages.rs:1033-1035` uses `BodySmall` + 18 dp for the in-app log preview but not `monospace`; only the file preview (`pages.rs:1508`) uses monospace. Instance metadata uses `muted`/`BodySmall` at 12 px (`pages.rs:121-125`) for version, loader and memory, which is the primary identifying information in a list.
 
 **HIG rule:** "Use font sizes that most people can read easily" (macOS default 13 pt, minimum 10 pt) — <https://developer.apple.com/design/human-interface-guidelines/typography>; "Minimize the number of typefaces you use" — same page; "Make sure all your app's colors work well in light, dark…" — <https://developer.apple.com/design/human-interface-guidelines/color>.
 
@@ -817,7 +816,6 @@ The kit at revision `26c0cb1` already provides every component below; no new dep
 | Back text button (`pages.rs:738-748`) | `TopAppBar.navigation_icon(IconButton arrow_back)` | Standard back symbol in the expected place |
 | Detail action row (`pages.rs:784-879`) | 2 buttons + `MaterialMenu` overflow | One/two prominent actions, destructive separated |
 | Switch without label (`pages.rs:2641-2647`) | `ListItem` + `ListTrailing::Switch`, or `.show_label(true)` | Visible label, full-row target, accessible parity |
-| Java auto-download switch (`pages.rs:2641-2647`) | `ListItem` trailing switch | M3 settings row pattern |
 | `div` logo (`mod.rs:2273-2285`, now an SVG mark) | Keep the SVG, mark it decorative | Current brand mark is good; no pseudo-button background |
 
 ## Prioritized implementation plan
@@ -840,7 +838,7 @@ The kit at revision `26c0cb1` already provides every component below; no new dep
 
 1. Persist and pass `text_scale` to `init_component_theme`/`advance_component_theme`; add the 100/125/150/200 control in Settings.
 2. Resolve `ReduceMotion::System` and `ThemePreference::System` from the OS; keep explicit overrides.
-3. Sync the native window appearance to the theme (DWM on Windows, appearance on macOS) or adopt the kit `TitleBar`.
+3. Use the kit `TitleBar`/`Caption` with `appears_transparent: true` (or sync the native appearance if the windowing layer supports it); keep the caption on `SURFACE` in both themes.
 4. Set a minimum window size and clamp the initial bounds to the work area; title = page/instance.
 5. Keep the app icon/build-resource work.
 
@@ -899,8 +897,8 @@ These are working and must not regress:
 
 - `ThemeId::Expressive` with semantic `ColorRole`s in both themes; no hex literals; the teal identity.
 - Five primary destinations and the correct rail → bar adaptation: expanded 220 dp at ≥840, collapsed 96 dp at 600–839, bar below 600; labels always visible.
-- The one primary "New instance" affordance in the navigation (once de-duplicated).
-- 32/24/20/radius hierarchy on the hero/panels/rows (normalize the outliers, keep the hierarchy).
+- The FAB as a compact primary action (keep one, docked above the navigation, not overlapping content).
+- The 32/24/20 dp radius hierarchy on the hero/panels/rows (normalize the outliers, keep the hierarchy).
 - `TypeRole` usage with explicit line heights; `HeadlineLarge` page titles, `DisplaySmall` hero, `LabelLarge` sections, `BodyMedium` body.
 - Kit `MaterialButton`, `IconButton`, `FilterChip`, `TextField`, `MaterialSwitch`, `MaterialTabs`, `MaterialDialog`, `Snackbar`, `LinearProgress`, `Avatar`, `Fab` usage where it exists.
 - The dialog padding wrapper (`px(24)/pb(8)`) and the create dialog's sticky footer; Escape/scrim dismissal.
