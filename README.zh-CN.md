@@ -68,6 +68,7 @@ cargo build --release
 - [`docs/design-system.md`](docs/design-system.md)
 - [`docs/architecture.md`](docs/architecture.md)
 - [`docs/git-workflow.md`](docs/git-workflow.md)
+- [`docs/testing.md`](docs/testing.md)
 - [`design/brand/README.md`](design/brand/README.md)
 
 ## 状态与已知缺口

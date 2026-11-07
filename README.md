@@ -75,6 +75,7 @@ The layout is documented in [`docs/architecture.md`](docs/architecture.md).
 - [`docs/design-system.md`](docs/design-system.md)
 - [`docs/architecture.md`](docs/architecture.md)
 - [`docs/git-workflow.md`](docs/git-workflow.md)
+- [`docs/testing.md`](docs/testing.md)
 - [`design/brand/README.md`](design/brand/README.md)
 
 ## Status and known gaps
